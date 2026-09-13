@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { annotateQuotaAdvice } from "../../src/advice.js";
-import type { ProviderQuota } from "../../src/types.js";
+import type { ProviderOptions, ProviderQuota } from "../../src/types.js";
 
 const originalHome = process.env.HOME;
 const originalUser = process.env.USER;
@@ -30,6 +30,8 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.doUnmock("../../src/lib/process.js");
+  vi.doUnmock("../../src/lib/running-processes.js");
+  vi.doUnmock("../../src/lib/fs.js");
   vi.doUnmock("node:os");
   vi.useRealTimers();
   if (originalPlatform)
@@ -66,6 +68,437 @@ function usePlatform(platform: NodeJS.Platform): void {
 }
 
 describe("Claude credential-state reporting", () => {
+  const profileOnlyOptions = (overrides: Partial<ProviderOptions> = {}) =>
+    ({
+      allowKeychainPrompt: true,
+      refreshCredentials: true,
+      credentialMode: "profile-only",
+      ...overrides,
+    }) as ProviderOptions & { credentialMode: "profile-only" };
+
+  it.each([undefined, "", "   "])(
+    "requires an explicit nonblank profile-only selector (%s)",
+    async (selector) => {
+      useTempHome();
+      if (selector === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = selector;
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+
+      const { fetchQuota, inspectAuth } =
+        await import("../../src/providers/claude.js");
+      const auth = await inspectAuth(profileOnlyOptions());
+      const result = await fetchQuota(profileOnlyOptions());
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(auth.sources).toEqual([
+        {
+          source: "oauth-file",
+          status: "missing",
+          error: "profile_selector_missing",
+        },
+      ]);
+      expect(result).toMatchObject({
+        source: "unavailable",
+        windows: [],
+        state: {
+          status: "unavailable",
+          stale: false,
+          error: "Claude profile selector missing",
+        },
+        attempts: [
+          {
+            source: "oauth-file",
+            status: "skipped",
+            error: "profile_selector_missing",
+          },
+        ],
+      });
+    },
+  );
+
+  it("isolates profile-only readings between two selected homes", async () => {
+    const home = useTempHome();
+    const first = join(home, "first-profile");
+    const second = join(home, "second-profile");
+    writeClaudeConfigCredential(first, {
+      accessToken: "first-profile-token",
+      expiresAt: "2000-01-01T00:00:00.000Z",
+    });
+    writeClaudeConfigCredential(second, {
+      accessToken: "second-profile-token",
+      expiresAt: "2035-01-01T00:00:00.000Z",
+    });
+    const bearers: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const authorization = (init?.headers as Record<string, string>)
+          .authorization;
+        bearers.push(authorization);
+        if (String(input).endsWith("/api/oauth/profile")) {
+          return new Response(
+            JSON.stringify({
+              account: {
+                uuid: authorization.includes("first")
+                  ? "first-account"
+                  : "second-account",
+              },
+            }),
+            { status: 200 },
+          );
+        }
+        return new Response(
+          JSON.stringify({ five_hour: { utilization: 12 } }),
+          { status: 200 },
+        );
+      }),
+    );
+
+    const { fetchQuota } = await import("../../src/providers/claude.js");
+    process.env.CLAUDE_CONFIG_DIR = first;
+    const firstResult = await fetchQuota(profileOnlyOptions());
+    process.env.CLAUDE_CONFIG_DIR = second;
+    const secondResult = await fetchQuota(profileOnlyOptions());
+
+    expect(bearers).toEqual([
+      "Bearer first-profile-token",
+      "Bearer first-profile-token",
+      "Bearer second-profile-token",
+      "Bearer second-profile-token",
+    ]);
+    expect(firstResult).toMatchObject({
+      source: "oauth",
+      account: { accountId: "first-account", identityStatus: "verified" },
+      state: { status: "fresh", stale: false },
+      attempts: [
+        { source: "oauth-file", status: "success" },
+        { source: "oauth-profile", status: "success" },
+      ],
+    });
+    expect(secondResult.account?.accountId).toBe("second-account");
+    expect(JSON.stringify([firstResult, secondResult])).not.toContain(
+      "profile-token",
+    );
+  });
+
+  it("reads the exact Unicode spelling of a profile-only selector", async () => {
+    const home = useTempHome();
+    const selected = join(home, "profile-e\u0301");
+    const normalized = selected.normalize("NFC");
+    expect(selected).not.toBe(normalized);
+    process.env.CLAUDE_CONFIG_DIR = selected;
+    const selectedFile = join(selected, ".credentials.json");
+    const normalizedFile = join(normalized, ".credentials.json");
+    const files = new Map<string, unknown>([
+      [
+        selectedFile,
+        {
+          claudeAiOauth: {
+            accessToken: "exact-spelling-token",
+            expiresAt: "2035-01-01T00:00:00.000Z",
+          },
+        },
+      ],
+      [
+        normalizedFile,
+        {
+          claudeAiOauth: {
+            accessToken: "normalized-other-account-token",
+            expiresAt: "2035-01-01T00:00:00.000Z",
+          },
+        },
+      ],
+    ]);
+    const readJsonFileResult = vi.fn((file: string) => {
+      const value = files.get(file);
+      return value === undefined
+        ? { status: "missing" as const }
+        : { status: "success" as const, value };
+    });
+    vi.doMock("../../src/lib/fs.js", async (importOriginal) => {
+      const actual =
+        await importOriginal<typeof import("../../src/lib/fs.js")>();
+      return { ...actual, readJsonFileResult };
+    });
+    const bearers: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        bearers.push(
+          (init?.headers as Record<string, string> | undefined)
+            ?.authorization ?? "",
+        );
+        return String(input).endsWith("/api/oauth/profile")
+          ? new Response(
+              JSON.stringify({ account: { uuid: "exact-account" } }),
+              {
+                status: 200,
+              },
+            )
+          : new Response(JSON.stringify({ five_hour: { utilization: 12 } }), {
+              status: 200,
+            });
+      }),
+    );
+
+    const { fetchQuota } = await import("../../src/providers/claude.js");
+    const result = await fetchQuota(profileOnlyOptions());
+
+    expect(readJsonFileResult).toHaveBeenCalledTimes(1);
+    expect(readJsonFileResult).toHaveBeenCalledWith(selectedFile);
+    expect(readJsonFileResult).not.toHaveBeenCalledWith(normalizedFile);
+    expect(bearers).toEqual([
+      "Bearer exact-spelling-token",
+      "Bearer exact-spelling-token",
+    ]);
+    expect(result.account?.accountId).toBe("exact-account");
+  });
+
+  it("does not let Keychain, refresh, or cache rescue a selected profile failure", async () => {
+    usePlatform("darwin");
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-06T20:00:00.000Z"));
+    const home = useTempHome();
+    const selected = join(home, "selected-profile");
+    process.env.CLAUDE_CONFIG_DIR = selected;
+    writeClaudeConfigCredential(selected, {
+      accessToken: "rejected-selected-token",
+      refreshToken: "must-not-be-read",
+      expiresAt: "2000-01-01T00:00:00.000Z",
+    });
+    writeClaudeCredential(home, {
+      accessToken: "hostile-default-token",
+      expiresAt: "2035-01-01T00:00:00.000Z",
+    });
+    const execFileText = vi.fn(async () =>
+      JSON.stringify({ claudeAiOauth: { accessToken: "hostile-keychain" } }),
+    );
+    const listRunningCommandLines = vi.fn(async () => ({
+      status: "available" as const,
+      processes: [],
+    }));
+    vi.doMock("../../src/lib/process.js", () => ({ execFileText }));
+    vi.doMock("../../src/lib/running-processes.js", () => ({
+      listRunningCommandLines,
+    }));
+    const fetchMock = vi.fn(async () => new Response(null, { status: 401 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { readCachedProvider, writeCachedProviders } =
+      await import("../../src/cache.js");
+    writeCachedProviders([cachedClaudeQuota(77)]);
+
+    const { fetchQuota } = await import("../../src/providers/claude.js");
+    const result = await fetchQuota(profileOnlyOptions());
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(execFileText).not.toHaveBeenCalled();
+    expect(listRunningCommandLines).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      source: "unavailable",
+      windows: [],
+      state: {
+        status: "auth_required",
+        stale: false,
+        error: "Claude sign-in required",
+      },
+      attempts: [
+        {
+          source: "oauth-file",
+          status: "failed",
+          error: "Claude sign-in required",
+        },
+      ],
+    });
+    expect(readCachedProvider("claude")?.windows[0]?.percentUsed).toBe(77);
+    expect(JSON.stringify(result)).not.toContain("rejected-selected-token");
+    expect(JSON.stringify(result)).not.toContain("must-not-be-read");
+  });
+
+  it.each([
+    [
+      "missing",
+      undefined,
+      "unavailable",
+      "Claude profile credentials missing",
+      "skipped",
+      "credentials_missing",
+      false,
+    ],
+    [
+      "malformed",
+      "{not-json",
+      "error",
+      "Claude credential file malformed",
+      "failed",
+      "json_parse_error",
+      false,
+    ],
+    [
+      "invalid",
+      JSON.stringify({ accessToken: "" }),
+      "error",
+      "Claude credential invalid",
+      "failed",
+      "credentials_invalid",
+      true,
+    ],
+  ] as const)(
+    "reports a %s selected profile credential without fallback",
+    async (
+      _label,
+      contents,
+      expectedStatus,
+      expectedError,
+      attemptStatus,
+      attemptError,
+      credentialPresent,
+    ) => {
+      const home = useTempHome();
+      const selected = join(home, "selected-profile");
+      process.env.CLAUDE_CONFIG_DIR = selected;
+      if (contents !== undefined) {
+        mkdirSync(selected, { recursive: true });
+        writeFileSync(join(selected, ".credentials.json"), contents);
+      }
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+
+      const { fetchQuota } = await import("../../src/providers/claude.js");
+      const result = await fetchQuota(profileOnlyOptions());
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(result).toMatchObject({
+        state: { status: expectedStatus, error: expectedError },
+        attempts: [
+          {
+            source: "oauth-file",
+            status: attemptStatus,
+            error: attemptError,
+            ...(credentialPresent ? { credentialPresent: true } : {}),
+          },
+        ],
+      });
+    },
+  );
+
+  it("reports an unreadable selected credential file separately", async () => {
+    const home = useTempHome();
+    const selected = join(home, "selected-profile");
+    process.env.CLAUDE_CONFIG_DIR = selected;
+    const credentialFile = join(selected, ".credentials.json");
+    vi.doMock("../../src/lib/fs.js", async (importOriginal) => {
+      const actual =
+        await importOriginal<typeof import("../../src/lib/fs.js")>();
+      return {
+        ...actual,
+        readJsonFileResult: (file: string) =>
+          file === credentialFile
+            ? { status: "invalid" as const, error: "file_read_error" }
+            : actual.readJsonFileResult(file),
+      };
+    });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { fetchQuota } = await import("../../src/providers/claude.js");
+    const result = await fetchQuota(profileOnlyOptions());
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      state: {
+        status: "error",
+        stale: false,
+        error: "Claude credential file unreadable",
+      },
+      attempts: [
+        {
+          source: "oauth-file",
+          status: "failed",
+          error: "file_read_error",
+        },
+      ],
+    });
+  });
+
+  it("rejects control characters before constructing an OAuth header", async () => {
+    const home = useTempHome();
+    const selected = join(home, "selected-profile");
+    process.env.CLAUDE_CONFIG_DIR = selected;
+    const token = "secret-token\r\nX-Leak: yes";
+    writeClaudeConfigCredential(selected, {
+      accessToken: token,
+      expiresAt: "2035-01-01T00:00:00.000Z",
+    });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { fetchQuota } = await import("../../src/providers/claude.js");
+    const result = await fetchQuota(profileOnlyOptions());
+    const serialized = JSON.stringify(result);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      state: { status: "error", error: "Claude credential invalid" },
+      attempts: [
+        {
+          source: "oauth-file",
+          status: "failed",
+          error: "credentials_invalid",
+          credentialPresent: true,
+        },
+      ],
+    });
+    expect(serialized).not.toContain("secret-token");
+    expect(serialized).not.toContain("X-Leak");
+  });
+
+  it.each([
+    [
+      "arbitrary request error",
+      Object.assign(new Error("request failed for secret-network-token"), {
+        code: "secret-network-token",
+      }),
+      "Claude quota unavailable",
+    ],
+    [
+      "timeout",
+      Object.assign(new Error("secret-timeout-token"), { name: "AbortError" }),
+      "Claude quota request timed out",
+    ],
+  ])(
+    "redacts tokens from a profile-only %s",
+    async (_label, thrown, expectedError) => {
+      const home = useTempHome();
+      const selected = join(home, "selected-profile");
+      process.env.CLAUDE_CONFIG_DIR = selected;
+      const token = "secret-network-token";
+      writeClaudeConfigCredential(selected, {
+        accessToken: token,
+        expiresAt: "2035-01-01T00:00:00.000Z",
+      });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => {
+          throw thrown;
+        }),
+      );
+
+      const { fetchQuota } = await import("../../src/providers/claude.js");
+      const result = await fetchQuota(profileOnlyOptions());
+      const serialized = JSON.stringify(result);
+
+      expect(result).toMatchObject({
+        state: { status: "error", error: expectedError },
+        attempts: [
+          { source: "oauth-file", status: "failed", error: expectedError },
+        ],
+      });
+      expect(serialized).not.toContain(token);
+      expect(serialized).not.toContain("secret-timeout-token");
+    },
+  );
+
   it("uses nonempty USER for the Keychain account before userInfo", async () => {
     const userInfoMock = vi.fn(() => ({ username: "system-user" }));
     vi.doMock("node:os", async (importOriginal) => {

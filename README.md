@@ -312,10 +312,22 @@ It is generated from `src/skill.ts`; update it with `pnpm run build:skill` and v
 | `--once`                                                                       | Render one `--tui` frame and exit instead of staying live          |
 | `--allow-keychain-prompt`                                                      | Permit macOS provider Keychain access that could prompt            |
 | `--no-credential-refresh`                                                      | Never run a vendor CLI's own non-interactive credential refresh    |
+| `--profile-only`                                                               | Read one explicitly selected Claude or Codex credential file       |
 | `--intelligence high\|medium\|low`                                             | Filter `models` by editorial intelligence bucket                   |
 | `--sort runway`                                                                | Explicitly sort `models` by documented usable-runway evidence      |
 | `-h`, `--help`                                                                 | Print terse [AXI](https://axi.md) help                             |
 | `-v`, `-V`, `--version`                                                        | Print version                                                      |
+
+### Profile-only quota reads
+
+Profile-only mode is accepted only by `quota`, requires exactly one `--provider` selector, and supports only Claude and Codex. Claude requires an explicit nonblank `CLAUDE_CONFIG_DIR`; Codex requires an explicit nonblank `CODEX_HOME`. There is no default-location fallback in this mode.
+
+It reads only `$CLAUDE_CONFIG_DIR/.credentials.json` or `$CODEX_HOME/auth.json`. It never reads the macOS Keychain or Pi auth, invokes a CLI RPC or other credential fallback, delegates a refresh, or reads, writes, clears, or persists quota cache data. `--full --json` retains non-secret account identity, the top-level source, and source attempts for provenance. Tokens and credential-file contents remain excluded. Ordinary output remains redacted.
+
+```sh
+CLAUDE_CONFIG_DIR=/path/to/claude-profile quota-axi --provider claude --profile-only --full --json --no-credential-refresh
+CODEX_HOME=/path/to/codex-profile quota-axi --provider codex --profile-only --full --json --no-credential-refresh
+```
 
 ### Human terminal report (`--tui`)
 
