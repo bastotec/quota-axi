@@ -795,7 +795,6 @@ async function fetchProfileOnlyQuota(): Promise<ProviderQuota> {
         : "error",
     [{ source: "oauth", status: "failed", error }],
     attempt.kind === "transient" ? attempt.retryAfter : undefined,
-    "oauth",
   );
 }
 
@@ -816,12 +815,10 @@ function profileOnlyFailure(
   status: ProviderQuota["state"]["status"],
   attempts: SourceAttempt[],
   retryAfter?: string,
-  source?: ProviderQuota["source"],
 ): ProviderQuota {
   return failedProvider({
     provider: "codex",
     label: "Codex",
-    ...(source ? { source } : {}),
     status,
     error,
     retryAfter,

@@ -1293,7 +1293,7 @@ describe("Codex credential-state reporting", () => {
       const result = await fetchQuota(options);
 
       expect(result).toMatchObject({
-        source: "oauth",
+        source: "unavailable",
         state: {
           status: "auth_required",
           error: "Codex sign-in required",
@@ -1325,7 +1325,7 @@ describe("Codex credential-state reporting", () => {
       const result = await fetchQuota(options);
 
       expect(fetchMock).toHaveBeenCalledTimes(2);
-      expect(result.source).toBe("oauth");
+      expect(result.source).toBe("unavailable");
       expect(result.state).toMatchObject({
         status: "auth_required",
         stale: false,
