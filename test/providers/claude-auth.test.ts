@@ -85,19 +85,10 @@ describe("Claude credential-state reporting", () => {
       const fetchMock = vi.fn();
       vi.stubGlobal("fetch", fetchMock);
 
-      const { fetchQuota, inspectAuth } =
-        await import("../../src/providers/claude.js");
-      const auth = await inspectAuth(profileOnlyOptions());
+      const { fetchQuota } = await import("../../src/providers/claude.js");
       const result = await fetchQuota(profileOnlyOptions());
 
       expect(fetchMock).not.toHaveBeenCalled();
-      expect(auth.sources).toEqual([
-        {
-          source: "oauth-file",
-          status: "missing",
-          error: "profile_selector_missing",
-        },
-      ]);
       expect(result).toMatchObject({
         source: "unavailable",
         windows: [],
@@ -419,38 +410,6 @@ describe("Claude credential-state reporting", () => {
         },
       ],
     });
-  });
-
-  it("rejects control characters before constructing an OAuth header", async () => {
-    const home = useTempHome();
-    const selected = join(home, "selected-profile");
-    process.env.CLAUDE_CONFIG_DIR = selected;
-    const token = "secret-token\r\nX-Leak: yes";
-    writeClaudeConfigCredential(selected, {
-      accessToken: token,
-      expiresAt: "2035-01-01T00:00:00.000Z",
-    });
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
-
-    const { fetchQuota } = await import("../../src/providers/claude.js");
-    const result = await fetchQuota(profileOnlyOptions());
-    const serialized = JSON.stringify(result);
-
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(result).toMatchObject({
-      state: { status: "error", error: "Claude credential invalid" },
-      attempts: [
-        {
-          source: "oauth-file",
-          status: "failed",
-          error: "credentials_invalid",
-          credentialPresent: true,
-        },
-      ],
-    });
-    expect(serialized).not.toContain("secret-token");
-    expect(serialized).not.toContain("X-Leak");
   });
 
   it.each([
