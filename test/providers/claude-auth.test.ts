@@ -321,16 +321,16 @@ describe("Claude credential-state reporting", () => {
       "{not-json",
       "error",
       "Claude credential file malformed",
-      "failed",
+      "skipped",
       "json_parse_error",
-      false,
+      true,
     ],
     [
       "invalid",
       JSON.stringify({ accessToken: "" }),
       "error",
       "Claude credential invalid",
-      "failed",
+      "skipped",
       "credentials_invalid",
       true,
     ],
@@ -405,8 +405,9 @@ describe("Claude credential-state reporting", () => {
       attempts: [
         {
           source: "oauth-file",
-          status: "failed",
+          status: "skipped",
           error: "file_read_error",
+          credentialPresent: true,
         },
       ],
     });

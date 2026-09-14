@@ -270,7 +270,12 @@ async function fetchProfileOnlyQuota(): Promise<ProviderQuota> {
         ? "Claude credential file unreadable"
         : "Claude credential file malformed";
     return profileOnlyFailure(new ClaudeFailure(error, { status: "error" }), [
-      { source: "oauth-file", status: "failed", error: reason },
+      {
+        source: "oauth-file",
+        status: "skipped",
+        error: reason,
+        credentialPresent: true,
+      },
     ]);
   }
 
@@ -281,7 +286,7 @@ async function fetchProfileOnlyQuota(): Promise<ProviderQuota> {
       [
         {
           source: "oauth-file",
-          status: "failed",
+          status: "skipped",
           error: "credentials_invalid",
           credentialPresent: true,
         },
@@ -294,7 +299,7 @@ async function fetchProfileOnlyQuota(): Promise<ProviderQuota> {
       [
         {
           source: "oauth-file",
-          status: "failed",
+          status: "skipped",
           error: "credentials_invalid",
           credentialPresent: true,
         },
@@ -340,10 +345,7 @@ async function fetchProfileOnlyQuota(): Promise<ProviderQuota> {
       status: "failed",
       error: failure.code,
     };
-    return profileOnlyFailure(
-      failure.definitiveAuth ? failure : failure.withUsageFetchFailure(),
-      attempts,
-    );
+    return profileOnlyFailure(failure, attempts);
   }
 }
 
@@ -359,7 +361,6 @@ function profileOnlyClaudeFailureFor(
   if (error instanceof ClaudeFailure) return error;
   return new ClaudeFailure(redactSecret(errorMessage(error), accessToken), {
     status: "error",
-    staleEligible: true,
   });
 }
 
@@ -373,7 +374,7 @@ function profileOnlyFailure(
   failure: ClaudeFailure,
   attempts: SourceAttempt[],
 ): ProviderQuota {
-  const report = failedProvider({
+  return failedProvider({
     provider: "claude",
     label: "Claude",
     status: failure.status,
@@ -382,7 +383,6 @@ function profileOnlyFailure(
     sourcesTried: sourceNames(attempts),
     attempts,
   });
-  return failure.usageFetchFailure ? withUsageFetchFailure(report) : report;
 }
 
 /**
