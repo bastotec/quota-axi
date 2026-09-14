@@ -1055,14 +1055,17 @@ describe("Codex credential-state reporting", () => {
       writeFileSync(
         join(firstHome, "auth.json"),
         JSON.stringify({
-          tokens: { access_token: "first-secret", account_id: "acct-first" },
+          tokens: {
+            access_token: "CODEX-SENTINEL-DO-NOT-LEAK-220001",
+            account_id: "acct-first",
+          },
         }),
       );
       writeFileSync(
         join(secondHome, "auth.json"),
         JSON.stringify({
           tokens: {
-            access_token: "second-secret",
+            access_token: "CODEX-SENTINEL-DO-NOT-LEAK-220002",
             account_id: "acct-second",
           },
         }),
@@ -1099,12 +1102,12 @@ describe("Codex credential-state reporting", () => {
 
       expect(requests).toEqual([
         {
-          authorization: "Bearer first-secret",
+          authorization: "Bearer CODEX-SENTINEL-DO-NOT-LEAK-220001",
           accept: "application/json",
           "ChatGPT-Account-Id": "acct-first",
         },
         {
-          authorization: "Bearer second-secret",
+          authorization: "Bearer CODEX-SENTINEL-DO-NOT-LEAK-220002",
           accept: "application/json",
           "ChatGPT-Account-Id": "acct-second",
         },
@@ -1128,7 +1131,7 @@ describe("Codex credential-state reporting", () => {
       });
       expect(first.state.refreshedAt).toBeTruthy();
       expect(JSON.stringify({ first, second })).not.toMatch(
-        /first-secret|second-secret/,
+        /CODEX-SENTINEL-DO-NOT-LEAK-220001|CODEX-SENTINEL-DO-NOT-LEAK-220002/,
       );
     });
 
@@ -1190,11 +1193,15 @@ describe("Codex credential-state reporting", () => {
       mkdirSync(trimmedHome, { recursive: true });
       writeFileSync(
         join(selectedHome, "auth.json"),
-        JSON.stringify({ tokens: { access_token: "selected-secret" } }),
+        JSON.stringify({
+          tokens: { access_token: "CODEX-SENTINEL-DO-NOT-LEAK-220003" },
+        }),
       );
       writeFileSync(
         join(trimmedHome, "auth.json"),
-        JSON.stringify({ tokens: { access_token: "wrong-secret" } }),
+        JSON.stringify({
+          tokens: { access_token: "CODEX-SENTINEL-DO-NOT-LEAK-220004" },
+        }),
       );
       process.env.CODEX_HOME = selectedHome;
       const bearers: string[] = [];
@@ -1210,9 +1217,9 @@ describe("Codex credential-state reporting", () => {
       const result = await fetchQuota(options);
 
       expect(result.state.status).toBe("fresh");
-      expect(bearers).toEqual(["Bearer selected-secret"]);
+      expect(bearers).toEqual(["Bearer CODEX-SENTINEL-DO-NOT-LEAK-220003"]);
       expect(JSON.stringify(result)).not.toMatch(
-        /selected-secret|wrong-secret/,
+        /CODEX-SENTINEL-DO-NOT-LEAK-220003|CODEX-SENTINEL-DO-NOT-LEAK-220004/,
       );
     });
 
@@ -1282,7 +1289,7 @@ describe("Codex credential-state reporting", () => {
     );
 
     it("reports definitive selected-profile rejection as auth required without exposing the token", async () => {
-      const token = "selected-profile-secret";
+      const token = "CODEX-SENTINEL-DO-NOT-LEAK-220005";
       writeAuth({ tokens: { access_token: token } });
       vi.stubGlobal(
         "fetch",

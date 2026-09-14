@@ -113,11 +113,11 @@ describe("Claude credential-state reporting", () => {
     const first = join(home, "first-profile");
     const second = join(home, "second-profile");
     writeClaudeConfigCredential(first, {
-      accessToken: "first-profile-token",
+      accessToken: "CLAUDE-SENTINEL-DO-NOT-LEAK-FIRST-110001",
       expiresAt: "2000-01-01T00:00:00.000Z",
     });
     writeClaudeConfigCredential(second, {
-      accessToken: "second-profile-token",
+      accessToken: "CLAUDE-SENTINEL-DO-NOT-LEAK-SECOND-110002",
       expiresAt: "2035-01-01T00:00:00.000Z",
     });
     const bearers: string[] = [];
@@ -131,7 +131,7 @@ describe("Claude credential-state reporting", () => {
           return new Response(
             JSON.stringify({
               account: {
-                uuid: authorization.includes("first")
+                uuid: authorization.includes("-FIRST-")
                   ? "first-account"
                   : "second-account",
               },
@@ -153,10 +153,10 @@ describe("Claude credential-state reporting", () => {
     const secondResult = await fetchQuota(profileOnlyOptions());
 
     expect(bearers).toEqual([
-      "Bearer first-profile-token",
-      "Bearer first-profile-token",
-      "Bearer second-profile-token",
-      "Bearer second-profile-token",
+      "Bearer CLAUDE-SENTINEL-DO-NOT-LEAK-FIRST-110001",
+      "Bearer CLAUDE-SENTINEL-DO-NOT-LEAK-FIRST-110001",
+      "Bearer CLAUDE-SENTINEL-DO-NOT-LEAK-SECOND-110002",
+      "Bearer CLAUDE-SENTINEL-DO-NOT-LEAK-SECOND-110002",
     ]);
     expect(firstResult).toMatchObject({
       source: "oauth",
@@ -168,8 +168,8 @@ describe("Claude credential-state reporting", () => {
       ],
     });
     expect(secondResult.account?.accountId).toBe("second-account");
-    expect(JSON.stringify([firstResult, secondResult])).not.toContain(
-      "profile-token",
+    expect(JSON.stringify([firstResult, secondResult])).not.toMatch(
+      /CLAUDE-SENTINEL-DO-NOT-LEAK-FIRST-110001|CLAUDE-SENTINEL-DO-NOT-LEAK-SECOND-110002/,
     );
   });
 
@@ -186,7 +186,7 @@ describe("Claude credential-state reporting", () => {
         selectedFile,
         {
           claudeAiOauth: {
-            accessToken: "exact-spelling-token",
+            accessToken: "CLAUDE-SENTINEL-DO-NOT-LEAK-110003",
             expiresAt: "2035-01-01T00:00:00.000Z",
           },
         },
@@ -195,7 +195,7 @@ describe("Claude credential-state reporting", () => {
         normalizedFile,
         {
           claudeAiOauth: {
-            accessToken: "normalized-other-account-token",
+            accessToken: "CLAUDE-SENTINEL-DO-NOT-LEAK-110010",
             expiresAt: "2035-01-01T00:00:00.000Z",
           },
         },
@@ -240,8 +240,8 @@ describe("Claude credential-state reporting", () => {
     expect(readJsonFileResult).toHaveBeenCalledWith(selectedFile);
     expect(readJsonFileResult).not.toHaveBeenCalledWith(normalizedFile);
     expect(bearers).toEqual([
-      "Bearer exact-spelling-token",
-      "Bearer exact-spelling-token",
+      "Bearer CLAUDE-SENTINEL-DO-NOT-LEAK-110003",
+      "Bearer CLAUDE-SENTINEL-DO-NOT-LEAK-110003",
     ]);
     expect(result.account?.accountId).toBe("exact-account");
   });
@@ -254,16 +254,18 @@ describe("Claude credential-state reporting", () => {
     const selected = join(home, "selected-profile");
     process.env.CLAUDE_CONFIG_DIR = selected;
     writeClaudeConfigCredential(selected, {
-      accessToken: "rejected-selected-token",
-      refreshToken: "must-not-be-read",
+      accessToken: "CLAUDE-SENTINEL-DO-NOT-LEAK-110004",
+      refreshToken: "CLAUDE-SENTINEL-DO-NOT-LEAK-110005",
       expiresAt: "2000-01-01T00:00:00.000Z",
     });
     writeClaudeCredential(home, {
-      accessToken: "hostile-default-token",
+      accessToken: "CLAUDE-SENTINEL-DO-NOT-LEAK-110006",
       expiresAt: "2035-01-01T00:00:00.000Z",
     });
     const execFileText = vi.fn(async () =>
-      JSON.stringify({ claudeAiOauth: { accessToken: "hostile-keychain" } }),
+      JSON.stringify({
+        claudeAiOauth: { accessToken: "CLAUDE-SENTINEL-DO-NOT-LEAK-110007" },
+      }),
     );
     const listRunningCommandLines = vi.fn(async () => ({
       status: "available" as const,
@@ -302,8 +304,12 @@ describe("Claude credential-state reporting", () => {
       ],
     });
     expect(readCachedProvider("claude")?.windows[0]?.percentUsed).toBe(77);
-    expect(JSON.stringify(result)).not.toContain("rejected-selected-token");
-    expect(JSON.stringify(result)).not.toContain("must-not-be-read");
+    expect(JSON.stringify(result)).not.toContain(
+      "CLAUDE-SENTINEL-DO-NOT-LEAK-110004",
+    );
+    expect(JSON.stringify(result)).not.toContain(
+      "CLAUDE-SENTINEL-DO-NOT-LEAK-110005",
+    );
   });
 
   it.each([
@@ -416,7 +422,9 @@ describe("Claude credential-state reporting", () => {
   it.each([
     [
       "network failure",
-      new TypeError("fetch failed to https://api/secret-network-token"),
+      new TypeError(
+        "fetch failed to https://api/CLAUDE-SENTINEL-DO-NOT-LEAK-110008",
+      ),
       "fetch failed to https://api/[redacted]",
     ],
     [
@@ -426,17 +434,23 @@ describe("Claude credential-state reporting", () => {
     ],
     [
       "timeout",
-      Object.assign(new Error("secret-timeout-token"), { name: "AbortError" }),
+      Object.assign(new Error("CLAUDE-SENTINEL-DO-NOT-LEAK-110009"), {
+        name: "AbortError",
+      }),
       "Claude quota request timed out",
     ],
-    ["non-error throw", "secret-network-token", "Claude quota unavailable"],
+    [
+      "non-error throw",
+      "CLAUDE-SENTINEL-DO-NOT-LEAK-110008",
+      "Claude quota unavailable",
+    ],
   ])(
     "reports a profile-only %s with the credential redacted",
     async (_label, thrown, expectedError) => {
       const home = useTempHome();
       const selected = join(home, "selected-profile");
       process.env.CLAUDE_CONFIG_DIR = selected;
-      const token = "secret-network-token";
+      const token = "CLAUDE-SENTINEL-DO-NOT-LEAK-110008";
       writeClaudeConfigCredential(selected, {
         accessToken: token,
         expiresAt: "2035-01-01T00:00:00.000Z",
@@ -459,7 +473,7 @@ describe("Claude credential-state reporting", () => {
         ],
       });
       expect(serialized).not.toContain(token);
-      expect(serialized).not.toContain("secret-timeout-token");
+      expect(serialized).not.toContain("CLAUDE-SENTINEL-DO-NOT-LEAK-110009");
     },
   );
 
