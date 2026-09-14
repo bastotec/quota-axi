@@ -287,10 +287,7 @@ async function fetchProfileOnlyQuota(): Promise<ProviderQuota> {
       ],
     );
   }
-  if (
-    !("credentials" in state) ||
-    hasHttpHeaderControlCharacters(state.credentials.accessToken)
-  ) {
+  if (!("credentials" in state)) {
     return profileOnlyFailure(
       new ClaudeFailure("Claude credential invalid", { status: "error" }),
       [
@@ -344,13 +341,6 @@ async function fetchProfileOnlyQuota(): Promise<ProviderQuota> {
       attempts,
     );
   }
-}
-
-function hasHttpHeaderControlCharacters(value: string): boolean {
-  return Array.from(value).some((character) => {
-    const code = character.charCodeAt(0);
-    return code <= 0x1f || code === 0x7f;
-  });
 }
 
 function profileOnlyClaudeFailureFor(error: unknown): ClaudeFailure {
@@ -737,42 +727,6 @@ function claudeFailureFor(error: unknown): ClaudeFailure {
 export async function inspectAuth(
   options: ProviderOptions,
 ): Promise<AuthProviderReport> {
-  if (isProfileOnly(options)) {
-    const credentialFile = profileOnlyCredentialFile();
-    if (!credentialFile) {
-      return {
-        provider: "claude",
-        sources: [
-          {
-            source: "oauth-file",
-            status: "missing",
-            error: "profile_selector_missing",
-          },
-        ],
-      };
-    }
-    const state = extractCredentialState(
-      readJsonFileResult(credentialFile),
-      "oauth-file",
-      credentialFile,
-    );
-    return {
-      provider: "claude",
-      sources: [
-        state.status === "available"
-          ? { source: "oauth-file", path: credentialFile, status: "available" }
-          : state.status === "missing"
-            ? { ...state.source, error: "credentials_missing" }
-            : state.status === "invalid"
-              ? {
-                  ...state.source,
-                  error: state.source.error ?? "credentials_invalid",
-                }
-              : state.source,
-      ],
-    };
-  }
-
   const locations = resolveClaudeProfileLocations();
   const states = await readCredentialStates(options, locations);
   const sources = states.map((state): AuthSourceReport => {

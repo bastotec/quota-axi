@@ -1158,7 +1158,6 @@ describe("Codex credential-state reporting", () => {
         piCodexBroker: { resolve, inspect },
       });
       const result = await adapter.fetchQuota(options);
-      const auth = await adapter.inspectAuth(options);
 
       expect(result).toMatchObject({
         source: "unavailable",
@@ -1177,13 +1176,6 @@ describe("Codex credential-state reporting", () => {
           },
         ],
       });
-      expect(auth.sources).toEqual([
-        {
-          source: "auth-json",
-          status: "missing",
-          error: "profile_selector_missing",
-        },
-      ]);
       expect(resolve).not.toHaveBeenCalled();
       expect(inspect).not.toHaveBeenCalled();
       expect(readCachedProvider).not.toHaveBeenCalled();
@@ -1214,15 +1206,12 @@ describe("Codex credential-state reporting", () => {
         }),
       );
 
-      const { fetchQuota, inspectAuth } =
-        await import("../../src/providers/codex.js");
+      const { fetchQuota } = await import("../../src/providers/codex.js");
       const result = await fetchQuota(options);
-      const auth = await inspectAuth(options);
 
       expect(result.state.status).toBe("fresh");
       expect(bearers).toEqual(["Bearer selected-secret"]);
-      expect(auth.sources[0]?.path).toBe(join(selectedHome, "auth.json"));
-      expect(JSON.stringify({ result, auth })).not.toMatch(
+      expect(JSON.stringify(result)).not.toMatch(
         /selected-secret|wrong-secret/,
       );
     });

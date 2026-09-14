@@ -127,8 +127,7 @@ export function createCodexAdapter(
     id: "codex",
     label: "Codex",
     fetchQuota: (options) => fetchQuotaWithDependencies(dependencies, options),
-    inspectAuth: (options) =>
-      inspectAuthWithDependencies(dependencies, options),
+    inspectAuth: (_options) => inspectAuthWithDependencies(dependencies),
   };
 }
 
@@ -407,31 +406,14 @@ function codexFailureReport(
 }
 
 export async function inspectAuth(
-  options: ProviderOptions,
+  _options: ProviderOptions,
 ): Promise<AuthProviderReport> {
-  return inspectAuthWithDependencies(defaultCodexDependencies, options);
+  return inspectAuthWithDependencies(defaultCodexDependencies);
 }
 
 async function inspectAuthWithDependencies(
   dependencies: CodexDependencies,
-  options: ProviderOptions,
 ): Promise<AuthProviderReport> {
-  if (isProfileOnly(options)) {
-    const selected = selectedProfileAuthFile();
-    return {
-      provider: "codex",
-      sources: [
-        selected
-          ? readCredentialState(selected).source
-          : {
-              source: "auth-json",
-              status: "missing",
-              error: "profile_selector_missing",
-            },
-      ],
-    };
-  }
-
   const authFile = codexAuthFile();
   const credentialState = readCredentialState(authFile);
   let piSource: AuthSourceReport;
