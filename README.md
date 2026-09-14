@@ -320,7 +320,7 @@ It is generated from `src/skill.ts`; update it with `pnpm run build:skill` and v
 
 ### Profile-only quota reads
 
-Profile-only mode is accepted only by `quota`, requires exactly one `--provider` selector, and supports only Claude and Codex. Claude requires an explicit nonblank `CLAUDE_CONFIG_DIR`; Codex requires an explicit nonblank `CODEX_HOME`. There is no default-location fallback in this mode.
+Profile-only mode is accepted only by `quota`, requires exactly one `--provider` selector, and supports only Claude and Codex. Claude requires an explicit nonblank `CLAUDE_CONFIG_DIR`; Codex requires an explicit nonblank `CODEX_HOME`. There is no default-location fallback in this mode, and `--allow-keychain-prompt` is rejected rather than ignored.
 
 It reads only `$CLAUDE_CONFIG_DIR/.credentials.json` or `$CODEX_HOME/auth.json`. It never reads the macOS Keychain or Pi auth, invokes a CLI RPC or other credential fallback, delegates a refresh, or reads, writes, clears, or persists quota cache data. `--full --json` retains non-secret account identity, the top-level source, and source attempts for provenance. Tokens and credential-file contents remain excluded. Ordinary output remains redacted.
 
