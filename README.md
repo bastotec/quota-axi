@@ -643,6 +643,8 @@ Auth source entries can include `credentialPresent` when a source is not genuine
 | Alibaba        | The local `bl` CLI (`bl usage token-plan --output json`); quota-axi never reads Alibaba credential files or exchanges refresh data                                                                                                                                                                                                                                                                                             |
 | OpenCode Go    | `$XDG_DATA_HOME/opencode/auth.json` when set, `%LOCALAPPDATA%\opencode\auth.json` on Windows, otherwise `~/.local/share/opencode/auth.json`, for a literal `opencode-go` key with `opencode` fallback                                                                                                                                                                                                                          |
 
+The Claude and Codex rows describe default discovery; [`--profile-only`](#profile-only-quota-reads) narrows each to the one selected credential file.
+
 ### Provider notes
 
 **Claude**
@@ -758,7 +760,7 @@ The Claude and Grok delegated runs are bounded the same way:
 - Vendor output is discarded at the operating system, never read. A credential is never parsed out of a vendor's stdout; the refreshed value only ever comes from re-reading the vendor's own store.
 - It runs only for soft expiry: a stored-expired credential that carries a refresh token and was definitively rejected. Transient failures, missing or malformed stores, stored-valid credentials the server revoked, and relocated stores the vendor would not rewrite all stay read-only.
 - Claude adds a best-effort check before delegating: the process list must show no Claude Code process. Claude Code owns that session and refreshes it on its own schedule, so `claude doctor` alongside a live session is at best redundant and at worst a second holder racing a single-use refresh token. This also means a detached `claude doctor` that outlives quota-axi's wait is visible to the next read, which stays read-only instead of stacking another refresh on it. Not knowing counts as not safe: where the process list cannot be read (Windows, no effective uid, no `ps`), quota-axi stays read-only rather than guessing. The check and spawn are not atomic, so a Claude Code session starting after the check or another concurrent quota-axi read can still overlap the delegate. This narrows the common repeated five-minute `--tui` versus live-session collision and, together with never signaling the delegate, is strictly safer than force-killing without adding a failure mode beyond the pre-existing vendor-owned race.
-- `--no-credential-refresh` disables it entirely, and the read-only `auth` command never delegates a refresh.
+- `--no-credential-refresh` disables it entirely, the read-only `auth` command never delegates a refresh, and neither does [`--profile-only`](#profile-only-quota-reads).
 
 A Claude or Grok delegated run appears in `--full` output as its own attempt (`claude-cli-refresh`, `grok-cli-refresh`). Its `error` says what happened, so a report shows why no refresh took place:
 
