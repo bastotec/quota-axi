@@ -5,6 +5,7 @@ import { readCachedProvider } from "../cache.js";
 import { readJsonFileResult, type JsonFileReadResult } from "../lib/fs.js";
 import { providerFetch } from "../lib/http.js";
 import { findCommandPath, terminateChild } from "../lib/process.js";
+import { redactSecret } from "../lib/secret.js";
 import {
   clampPercent,
   nowIso,
@@ -1215,7 +1216,7 @@ function credentialSafeErrorMessage(
   error: unknown,
   credential: string,
 ): string {
-  return errorMessage(error).replaceAll(credential, "[redacted]");
+  return redactSecret(errorMessage(error), credential);
 }
 
 function errorMessage(error: unknown): string {

@@ -13,6 +13,7 @@ import {
 import { providerFetch } from "../lib/http.js";
 import { execFileText } from "../lib/process.js";
 import { listRunningCommandLines } from "../lib/running-processes.js";
+import { redactSecret } from "../lib/secret.js";
 import { clampPercent, nowIso, retryAfterToIso } from "../lib/time.js";
 import type {
   AuthProviderReport,
@@ -330,7 +331,10 @@ async function fetchProfileOnlyQuota(): Promise<ProviderQuota> {
       attempts,
     });
   } catch (error) {
-    const failure = profileOnlyClaudeFailureFor(error);
+    const failure = profileOnlyClaudeFailureFor(
+      error,
+      state.credentials.accessToken,
+    );
     attempts[0] = {
       source: "oauth-file",
       status: "failed",
@@ -343,15 +347,17 @@ async function fetchProfileOnlyQuota(): Promise<ProviderQuota> {
   }
 }
 
-function profileOnlyClaudeFailureFor(error: unknown): ClaudeFailure {
+/**
+ * Keep the real cause of a profile-only failure - a refused connection, a
+ * malformed response - so a single-account probe stays diagnosable, with the
+ * probed bearer stripped out of it.
+ */
+function profileOnlyClaudeFailureFor(
+  error: unknown,
+  accessToken: string,
+): ClaudeFailure {
   if (error instanceof ClaudeFailure) return error;
-  if (error instanceof Error && error.name === "AbortError") {
-    return new ClaudeFailure("Claude quota request timed out", {
-      status: "error",
-      staleEligible: true,
-    });
-  }
-  return new ClaudeFailure("Claude quota unavailable", {
+  return new ClaudeFailure(redactSecret(errorMessage(error), accessToken), {
     status: "error",
     staleEligible: true,
   });

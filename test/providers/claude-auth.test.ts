@@ -414,19 +414,23 @@ describe("Claude credential-state reporting", () => {
 
   it.each([
     [
-      "arbitrary request error",
-      Object.assign(new Error("request failed for secret-network-token"), {
-        code: "secret-network-token",
-      }),
-      "Claude quota unavailable",
+      "network failure",
+      new TypeError("fetch failed to https://api/secret-network-token"),
+      "fetch failed to https://api/[redacted]",
+    ],
+    [
+      "response shape failure",
+      new Error("Unexpected token < in JSON at position 0"),
+      "Unexpected token < in JSON at position 0",
     ],
     [
       "timeout",
       Object.assign(new Error("secret-timeout-token"), { name: "AbortError" }),
       "Claude quota request timed out",
     ],
+    ["non-error throw", "secret-network-token", "Claude quota unavailable"],
   ])(
-    "redacts tokens from a profile-only %s",
+    "reports a profile-only %s with the credential redacted",
     async (_label, thrown, expectedError) => {
       const home = useTempHome();
       const selected = join(home, "selected-profile");
@@ -448,7 +452,7 @@ describe("Claude credential-state reporting", () => {
       const serialized = JSON.stringify(result);
 
       expect(result).toMatchObject({
-        state: { status: "error", error: expectedError },
+        state: { status: "error", stale: false, error: expectedError },
         attempts: [
           { source: "oauth-file", status: "failed", error: expectedError },
         ],
