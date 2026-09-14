@@ -62,7 +62,7 @@ export function parseModelsFlags(args: string[]): ModelsFlags {
       "--profile-only is only supported by the quota command",
       "VALIDATION_ERROR",
       [
-        "Set CLAUDE_CONFIG_DIR and run `quota-axi --provider claude --profile-only --full --json --no-credential-refresh`",
+        "Set CLAUDE_CONFIG_DIR and run `quota-axi --provider claude --profile-only --full --json`",
       ],
     );
   }

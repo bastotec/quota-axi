@@ -24,7 +24,7 @@ flags[13]:
 examples:
   quota-axi
   quota-axi --provider claude
-  CLAUDE_CONFIG_DIR=/path/to/profile quota-axi --provider claude --profile-only --full --json --no-credential-refresh
+  CLAUDE_CONFIG_DIR=/path/to/profile quota-axi --provider claude --profile-only --full --json
   quota-axi --provider agy
   quota-axi --provider cursor,copilot,grok,kimi,zai
   quota-axi --json

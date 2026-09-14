@@ -325,8 +325,8 @@ Profile-only mode is accepted only by `quota`, requires exactly one `--provider`
 It reads only `$CLAUDE_CONFIG_DIR/.credentials.json` or `$CODEX_HOME/auth.json`. It never reads the macOS Keychain or Pi auth, invokes a CLI RPC or other credential fallback, delegates a refresh, or reads, writes, clears, or persists quota cache data. `--full --json` retains non-secret account identity, the top-level source, and source attempts for provenance. Tokens and credential-file contents remain excluded. Ordinary output remains redacted.
 
 ```sh
-CLAUDE_CONFIG_DIR=/path/to/claude-profile quota-axi --provider claude --profile-only --full --json --no-credential-refresh
-CODEX_HOME=/path/to/codex-profile quota-axi --provider codex --profile-only --full --json --no-credential-refresh
+CLAUDE_CONFIG_DIR=/path/to/claude-profile quota-axi --provider claude --profile-only --full --json
+CODEX_HOME=/path/to/codex-profile quota-axi --provider codex --profile-only --full --json
 ```
 
 ### Human terminal report (`--tui`)
