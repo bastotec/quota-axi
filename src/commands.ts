@@ -128,8 +128,9 @@ function processLiveTuiIo(): LiveTuiIo {
 }
 
 /**
- * Fetch, apply the all-failed exit code, and refresh the cache. A live report
- * re-evaluates the exit code every cycle so quitting reflects the last frame.
+ * Fetch, apply the all-failed exit code, and refresh the cache unless the read
+ * is profile-only, which never touches cached quota. A live report re-evaluates
+ * the exit code every cycle so quitting reflects the last frame.
  */
 async function loadQuota(
   providers: ProviderId[],

@@ -302,21 +302,21 @@ It is generated from `src/skill.ts`; update it with `pnpm run build:skill` and v
 
 ### Flags
 
-| Flag                                                                           | Description                                                        |
-| ------------------------------------------------------------------------------ | ------------------------------------------------------------------ |
-| `--provider claude,codex,cursor,copilot,grok,kimi,zai,agy,alibaba,opencode-go` | Scope providers                                                    |
-| `--json`                                                                       | Emit normalized JSON instead of TOON for quota, auth, or models    |
-| `--full`                                                                       | Include audit and derivation details                               |
-| `--tui`                                                                        | Render the live human terminal report instead of TOON (quota only) |
-| `--refresh 30s\|5m\|1h`                                                        | Live `--tui` refresh interval, default 5m (30s-24h)                |
-| `--once`                                                                       | Render one `--tui` frame and exit instead of staying live          |
-| `--allow-keychain-prompt`                                                      | Permit macOS provider Keychain access that could prompt            |
-| `--no-credential-refresh`                                                      | Never run a vendor CLI's own non-interactive credential refresh    |
-| `--profile-only`                                                               | Read one explicitly selected Claude or Codex credential file       |
-| `--intelligence high\|medium\|low`                                             | Filter `models` by editorial intelligence bucket                   |
-| `--sort runway`                                                                | Explicitly sort `models` by documented usable-runway evidence      |
-| `-h`, `--help`                                                                 | Print terse [AXI](https://axi.md) help                             |
-| `-v`, `-V`, `--version`                                                        | Print version                                                      |
+| Flag                                                                           | Description                                                               |
+| ------------------------------------------------------------------------------ | ------------------------------------------------------------------------- |
+| `--provider claude,codex,cursor,copilot,grok,kimi,zai,agy,alibaba,opencode-go` | Scope providers                                                           |
+| `--json`                                                                       | Emit normalized JSON instead of TOON for quota, auth, or models           |
+| `--full`                                                                       | Include audit and derivation details                                      |
+| `--tui`                                                                        | Render the live human terminal report instead of TOON (quota only)        |
+| `--refresh 30s\|5m\|1h`                                                        | Live `--tui` refresh interval, default 5m (30s-24h)                       |
+| `--once`                                                                       | Render one `--tui` frame and exit instead of staying live                 |
+| `--allow-keychain-prompt`                                                      | Permit macOS provider Keychain access that could prompt                   |
+| `--no-credential-refresh`                                                      | Never run a vendor CLI's own non-interactive credential refresh           |
+| `--profile-only`                                                               | Read one explicitly selected Claude or Codex credential file (quota only) |
+| `--intelligence high\|medium\|low`                                             | Filter `models` by editorial intelligence bucket                          |
+| `--sort runway`                                                                | Explicitly sort `models` by documented usable-runway evidence             |
+| `-h`, `--help`                                                                 | Print terse [AXI](https://axi.md) help                                    |
+| `-v`, `-V`, `--version`                                                        | Print version                                                             |
 
 ### Profile-only quota reads
 
