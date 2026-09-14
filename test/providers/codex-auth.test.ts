@@ -1165,7 +1165,7 @@ describe("Codex credential-state reporting", () => {
         state: {
           status: "unavailable",
           stale: false,
-          error: "profile_selector_missing",
+          error: "Codex profile selector missing",
           sourcesTried: ["oauth"],
         },
         attempts: [
@@ -1221,33 +1221,43 @@ describe("Codex credential-state reporting", () => {
         failure: "selected file missing",
         arrange: () => {},
         expectedStatus: "unavailable",
-        expectedError: "credentials_missing",
+        expectedError: "Codex profile credentials missing",
+        expectedReason: "credentials_missing",
         credentialPresent: undefined,
       },
       {
         failure: "selected file unreadable",
         arrange: () => mkdirSync(authFile()),
         expectedStatus: "error",
-        expectedError: "file_read_error",
+        expectedError: "Codex credential file unreadable",
+        expectedReason: "file_read_error",
         credentialPresent: true,
       },
       {
         failure: "selected file has malformed JSON",
         arrange: () => writeAuth("{not-json"),
         expectedStatus: "error",
-        expectedError: "json_parse_error",
+        expectedError: "Codex credential file malformed",
+        expectedReason: "json_parse_error",
         credentialPresent: true,
       },
       {
         failure: "selected file has an invalid credential",
         arrange: () => writeAuth({ tokens: {} }),
         expectedStatus: "error",
-        expectedError: "credentials_invalid",
+        expectedError: "Codex credential invalid",
+        expectedReason: "credentials_invalid",
         credentialPresent: true,
       },
     ])(
       "keeps $failure distinct without fallback",
-      async ({ arrange, expectedStatus, expectedError, credentialPresent }) => {
+      async ({
+        arrange,
+        expectedStatus,
+        expectedError,
+        expectedReason,
+        credentialPresent,
+      }) => {
         arrange();
         const fetchMock = vi.fn();
         vi.stubGlobal("fetch", fetchMock);
@@ -1262,7 +1272,7 @@ describe("Codex credential-state reporting", () => {
             {
               source: "oauth",
               status: "skipped",
-              error: expectedError,
+              error: expectedReason,
               ...(credentialPresent ? { credentialPresent } : {}),
             },
           ],

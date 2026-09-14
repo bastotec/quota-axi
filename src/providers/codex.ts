@@ -738,7 +738,7 @@ function selectedProfileAuthFile(): string | undefined {
 async function fetchProfileOnlyQuota(): Promise<ProviderQuota> {
   const selected = selectedProfileAuthFile();
   if (!selected) {
-    return profileOnlyFailure("profile_selector_missing", "unavailable", [
+    return profileOnlyFailure("Codex profile selector missing", "unavailable", [
       {
         source: "oauth",
         status: "skipped",
@@ -752,18 +752,18 @@ async function fetchProfileOnlyQuota(): Promise<ProviderQuota> {
     credentialState.status !== "available" &&
     credentialState.status !== "expired"
   ) {
-    const error =
+    const reason =
       credentialState.status === "missing"
         ? "credentials_missing"
         : (credentialState.source.error ?? "credentials_invalid");
     return profileOnlyFailure(
-      error,
+      profileOnlyCredentialError(reason),
       credentialState.status === "missing" ? "unavailable" : "error",
       [
         {
           source: "oauth",
           status: "skipped",
-          error,
+          error: reason,
           ...(credentialState.status === "invalid"
             ? { credentialPresent: true }
             : {}),
@@ -797,6 +797,18 @@ async function fetchProfileOnlyQuota(): Promise<ProviderQuota> {
     attempt.kind === "transient" ? attempt.retryAfter : undefined,
     "oauth",
   );
+}
+
+/**
+ * Keep `state.error` a sentence like every other Codex failure, and leave the
+ * stable reason code on the attempt.
+ */
+function profileOnlyCredentialError(reason: string): string {
+  if (reason === "credentials_missing")
+    return "Codex profile credentials missing";
+  if (reason === "file_read_error") return "Codex credential file unreadable";
+  if (reason === "json_parse_error") return "Codex credential file malformed";
+  return "Codex credential invalid";
 }
 
 function profileOnlyFailure(
