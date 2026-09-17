@@ -63,7 +63,7 @@ describe("models command", () => {
           reason: "no_live_catalog_source",
         },
       ],
-      unverifiedIdentityProviders: ["claude"],
+      unmatchedWindowIds: ["claude/model:fable"],
     });
     expect(json.models).toEqual(
       expect.arrayContaining([
@@ -72,7 +72,7 @@ describe("models command", () => {
           id: "claude-opus-4-5",
           identitySource: "unverified_builtin",
           intelligence: "high",
-          quotaScopes: ["model:fable"],
+          quotaScopes: [],
           state: { status: "fresh", stale: false },
         }),
       ]),
@@ -139,7 +139,6 @@ describe("models command", () => {
         (model: { id: string }) => model.id === "claude-opus-4-5",
       ),
     ).toBe(false);
-    expect(json.unverifiedIdentityProviders).toBeUndefined();
     expect(json.catalogSources).toEqual([
       {
         provider: "claude",
@@ -147,6 +146,49 @@ describe("models command", () => {
         fetchedAt: "2026-09-17T12:00:00.000Z",
         modelCount: 2,
       },
+    ]);
+  });
+
+  /**
+   * Regression: Claude slugifies an id-less limit's display name, so
+   * "Claude Opus 4.5" becomes `model:claude_opus_4_5`. Scope normalization used
+   * to strip the trailing `_5`, which turned the window into `claude_opus_4`
+   * and published Opus 4.5's bound as Opus 4's.
+   */
+  it("keeps a slugified versioned window off the vendor's earlier version", async () => {
+    PROVIDERS.claude = liveCatalogAdapter(
+      {
+        provider: "claude",
+        label: "Claude",
+        source: "oauth",
+        windows: [
+          {
+            id: "model:claude_opus_4_5",
+            label: "Claude Opus 4.5 week",
+            kind: "model",
+            percentUsed: 20,
+            percentRemaining: 80,
+          },
+        ],
+        state: { status: "fresh", stale: false, sourcesTried: ["oauth"] },
+      },
+      [
+        { id: "claude-opus-4-20250514", label: "Claude Opus 4" },
+        { id: "claude-opus-4-5-20251101", label: "Claude Opus 4.5" },
+      ],
+    );
+
+    const json = JSON.parse(
+      await capture(["models", "--provider", "claude", "--json"]),
+    );
+    const byId = new Map(
+      json.models.map((model: { id: string }) => [model.id, model]),
+    );
+    expect(byId.get("claude-opus-4-20250514").quotaScopes).not.toContain(
+      "model:claude_opus_4_5",
+    );
+    expect(byId.get("claude-opus-4-5-20251101").quotaScopes).toEqual([
+      "model:claude_opus_4_5",
     ]);
   });
 
@@ -186,14 +228,12 @@ describe("models command", () => {
     expect(json.catalogSources).toEqual([
       { provider: "claude", status: "unavailable", reason: "catalog_http_503" },
     ]);
-    expect(json.unverifiedIdentityProviders).toEqual(["claude"]);
     for (const model of json.models) {
       expect(model.identitySource).toBe("unverified_builtin");
     }
 
     const toon = await capture(["models", "--provider", "claude"]);
     expect(toon).toContain("catalog_http_503");
-    expect(toon).toContain("unverifiedIdentityProviders[1]: claude");
     expect(toon).toMatch(/claude-opus-4-5,[^\n]*,unverified,/);
   });
 
@@ -215,7 +255,6 @@ describe("models command", () => {
         reason: "catalog_unreachable",
       },
     ]);
-    expect(json.unverifiedIdentityProviders).toEqual(["claude"]);
   });
 
   it("discloses a live lineup the vendor said was not complete", async () => {

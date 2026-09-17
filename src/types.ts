@@ -461,8 +461,6 @@ export type ModelsResponse = {
   models: ModelQuotaRecord[];
   /** Model window scopes that matched no model in the lineup used. */
   unmatchedWindowIds?: string[];
-  /** Providers whose rows carry no live-catalog backing for their identity. */
-  unverifiedIdentityProviders?: ProviderId[];
   /** Present only when an explicit comparator was requested. */
   sort?: ModelSortResult;
 };

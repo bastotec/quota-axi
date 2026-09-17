@@ -66,9 +66,9 @@ validateModelCatalog(MODEL_CATALOG);
  * intelligence buckets and nothing else.
  *
  * When a provider's live catalog cannot be read, its rows fall back to the
- * built-in lineup but are marked `unverified_builtin` and the provider is named
- * in `catalogSources` and `unverifiedIdentityProviders`, so no reader can
- * mistake quota-axi's own stale lineup for the vendor's current one.
+ * built-in lineup but are marked `unverified_builtin` and `catalogSources` says
+ * why, so no reader can mistake quota-axi's own stale lineup for the vendor's
+ * current one.
  */
 export function createModelsResponse(
   quota: QuotaAxiResponse,
@@ -93,7 +93,6 @@ export function createModelsResponse(
 
   const rows: ModelQuotaRecord[] = [];
   const catalogSources: ModelCatalogSourceReport[] = [];
-  const unverifiedIdentityProviders: ProviderId[] = [];
   const unmatchedWindowIds: string[] = [];
 
   for (const provider of providers) {
@@ -110,7 +109,6 @@ export function createModelsResponse(
       continue;
     }
 
-    unverifiedIdentityProviders.push(provider.provider);
     rows.push(...builtinRows(provider, catalog.entries));
     unmatchedWindowIds.push(
       ...unmatchedAgainstBuiltin(provider, catalog.entries),
@@ -133,9 +131,6 @@ export function createModelsResponse(
   };
   const disclosure = {
     ...(unmatchedWindowIds.length > 0 ? { unmatchedWindowIds } : {}),
-    ...(unverifiedIdentityProviders.length > 0
-      ? { unverifiedIdentityProviders }
-      : {}),
   };
 
   if (!options.sort) return { ...base, models, ...disclosure };
@@ -353,7 +348,10 @@ function modelScopes(provider: ProviderQuota): string[] {
 }
 
 function normalizedModelScope(windowId: string): string {
-  return windowId.replace(/_\d+$/, "").replace(/:(?:5h|7d|window:[^:]+)$/, "");
+  const deduped = windowId.startsWith("model:")
+    ? windowId
+    : windowId.replace(/_\d+$/, "");
+  return deduped.replace(/:(?:5h|7d|window:[^:]+)$/, "");
 }
 
 function stateSummary(provider: ProviderQuota): ProviderStateSummary {

@@ -502,13 +502,6 @@ export function renderModelsToon(
     encode({ models }),
   ];
   if (response.sort) blocks.push(encode({ sort: response.sort }));
-  if (response.unverifiedIdentityProviders?.length) {
-    blocks.push(
-      encode({
-        unverifiedIdentityProviders: response.unverifiedIdentityProviders,
-      }),
-    );
-  }
   if (response.unmatchedWindowIds?.length) {
     blocks.push(encode({ unmatchedWindowIds: response.unmatchedWindowIds }));
   }
