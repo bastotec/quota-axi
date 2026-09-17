@@ -318,6 +318,98 @@ describe("models command", () => {
     expect(order).toEqual(["quota", "catalog"]);
   });
 
+  /**
+   * Regression: Codex renames a repeated window to `<id>_<n>`, so a deduplicated
+   * model window arrives as `model:gpt-5.1-codex:5h_2`. Scope normalization has
+   * to see through that counter, or a window that is in fact attributed is
+   * published as unaccounted for.
+   */
+  it("normalizes a deduplicated Codex model window to its own scope", async () => {
+    PROVIDERS.codex = adapter({
+      provider: "codex",
+      label: "Codex",
+      source: "oauth",
+      windows: [
+        {
+          id: "model:gpt-5.1-codex:5h",
+          label: "GPT-5.1-Codex session",
+          kind: "model",
+          percentUsed: 10,
+          percentRemaining: 90,
+        },
+        {
+          id: "model:gpt-5.1-codex:5h_2",
+          label: "GPT-5.1-Codex session",
+          kind: "model",
+          percentUsed: 20,
+          percentRemaining: 80,
+        },
+      ],
+      state: { status: "fresh", stale: false, sourcesTried: ["oauth"] },
+    });
+
+    const json = JSON.parse(
+      await capture(["models", "--provider", "codex", "--json"]),
+    );
+
+    expect(json.unmatchedWindowIds ?? []).not.toContain(
+      "codex/model:gpt-5.1-codex:5h_2",
+    );
+    const codex = json.models.find(
+      (model: { id: string }) => model.id === "gpt-5.1-codex",
+    );
+    expect(codex.quotaScopes).toEqual(["model:gpt-5.1-codex"]);
+  });
+
+  it("discloses a built-in window attribution the vendor never confirmed", async () => {
+    PROVIDERS.codex = adapter({
+      provider: "codex",
+      label: "Codex",
+      source: "oauth",
+      windows: [
+        {
+          id: "model:codex_bengalfox:7d",
+          label: "codex_bengalfox week",
+          kind: "model",
+          percentUsed: 20,
+          percentRemaining: 80,
+        },
+      ],
+      state: { status: "fresh", stale: false, sourcesTried: ["oauth"] },
+    });
+
+    const json = JSON.parse(
+      await capture(["models", "--provider", "codex", "--json"]),
+    );
+    const spark = json.models.find(
+      (model: { id: string }) => model.id === "gpt-5.3-codex",
+    );
+    expect(spark.quotaScopes).toEqual(["model:codex_bengalfox"]);
+    expect(json.unverifiedAttributions).toContainEqual({
+      provider: "codex",
+      windowId: "model:codex_bengalfox",
+      modelId: "gpt-5.3-codex",
+    });
+
+    const toon = await capture(["models", "--provider", "codex"]);
+    expect(toon).toContain("unverifiedAttributions[");
+    expect(toon).toContain("model:codex_bengalfox");
+  });
+
+  it("keeps a live provider's rows out of another provider's buckets", async () => {
+    PROVIDERS.claude = liveCatalogAdapter(fableQuota(), [
+      { id: "claude-spark-1", label: "GPT-5.3-Codex-Spark" },
+    ]);
+
+    const json = JSON.parse(
+      await capture(["models", "--provider", "claude", "--json"]),
+    );
+    const row = json.models.find(
+      (model: { id: string }) => model.id === "claude-spark-1",
+    );
+    expect(row.intelligence).toBeUndefined();
+  });
+
   it("rejects unsupported model filters and comparators as usage errors", async () => {
     const intelligence = await capture([
       "models",

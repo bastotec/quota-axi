@@ -20,6 +20,7 @@ import type {
   ProviderQuota,
   ProviderStateSummary,
   QuotaAxiResponse,
+  UnverifiedWindowAttribution,
 } from "./types.js";
 
 const INTELLIGENCE_BUCKETS = new Set<IntelligenceBucket>([
@@ -68,7 +69,9 @@ validateModelCatalog(MODEL_CATALOG);
  * When a provider's live catalog cannot be read, its rows fall back to the
  * built-in lineup but are marked `unverified_builtin` and `catalogSources` says
  * why, so no reader can mistake quota-axi's own stale lineup for the vendor's
- * current one.
+ * current one. Any window such a row claims through a built-in `windowIds`
+ * entry is published in `unverifiedAttributions`, because that mapping of one
+ * vendor name onto another is quota-axi's claim and not the vendor's.
  */
 export function createModelsResponse(
   quota: QuotaAxiResponse,
@@ -94,6 +97,7 @@ export function createModelsResponse(
   const rows: ModelQuotaRecord[] = [];
   const catalogSources: ModelCatalogSourceReport[] = [];
   const unmatchedWindowIds: string[] = [];
+  const unverifiedAttributions: UnverifiedWindowAttribution[] = [];
 
   for (const provider of providers) {
     const live = liveByProvider.get(provider.provider) ?? {
@@ -102,16 +106,22 @@ export function createModelsResponse(
       reason: "no_live_catalog_source",
     };
     catalogSources.push(catalogSourceReport(live));
+    const providerEntries = catalog.entries.filter(
+      (entry) => entry.provider === provider.provider,
+    );
 
     if (live.status === "live") {
-      rows.push(...liveRows(live.models, provider, catalog.entries));
+      rows.push(...liveRows(live.models, provider, providerEntries));
       unmatchedWindowIds.push(...unmatchedAgainstLive(provider, live.models));
       continue;
     }
 
-    rows.push(...builtinRows(provider, catalog.entries));
+    rows.push(...builtinRows(provider, providerEntries));
     unmatchedWindowIds.push(
-      ...unmatchedAgainstBuiltin(provider, catalog.entries),
+      ...unmatchedAgainstBuiltin(provider, providerEntries),
+    );
+    unverifiedAttributions.push(
+      ...builtinAttributions(provider, providerEntries),
     );
   }
 
@@ -131,6 +141,7 @@ export function createModelsResponse(
   };
   const disclosure = {
     ...(unmatchedWindowIds.length > 0 ? { unmatchedWindowIds } : {}),
+    ...(unverifiedAttributions.length > 0 ? { unverifiedAttributions } : {}),
   };
 
   if (!options.sort) return { ...base, models, ...disclosure };
@@ -251,21 +262,41 @@ function builtinRows(
   entries: readonly ModelCatalogEntry[],
 ): ModelQuotaRecord[] {
   const state = stateSummary(provider);
-  return entries
-    .filter((entry) => entry.provider === provider.provider)
-    .map((entry) => {
-      const effective = builtinAvailabilityFor(entry, provider);
-      return {
-        provider: entry.provider,
-        id: entry.id,
-        label: entry.label,
-        identitySource: "unverified_builtin" as const,
-        intelligence: entry.intelligence,
-        quotaScopes: effective ? [effective.scope] : [],
-        ...(effective ? { effective } : {}),
-        state,
-      };
-    });
+  return entries.map((entry) => {
+    const effective = builtinAvailabilityFor(entry, provider);
+    return {
+      provider: entry.provider,
+      id: entry.id,
+      label: entry.label,
+      identitySource: "unverified_builtin" as const,
+      intelligence: entry.intelligence,
+      quotaScopes: effective ? [effective.scope] : [],
+      ...(effective ? { effective } : {}),
+      state,
+    };
+  });
+}
+
+/**
+ * Model windows a built-in entry claims for a model, published so the claim is
+ * legible as quota-axi's own unconfirmed mapping of one vendor name onto
+ * another rather than as something the vendor said.
+ */
+function builtinAttributions(
+  provider: ProviderQuota,
+  entries: readonly ModelCatalogEntry[],
+): UnverifiedWindowAttribution[] {
+  const scopes = new Set(modelScopes(provider));
+  return entries.flatMap((entry) =>
+    (entry.windowIds ?? [])
+      .map(normalizedModelScope)
+      .filter((scope) => scopes.has(scope))
+      .map((windowId) => ({
+        provider: provider.provider,
+        windowId,
+        modelId: entry.id,
+      })),
+  );
 }
 
 function liveAvailabilityFor(
@@ -325,10 +356,7 @@ function unmatchedAgainstBuiltin(
   entries: readonly ModelCatalogEntry[],
 ): string[] {
   const knownScopes = new Set(
-    entries
-      .filter((entry) => entry.provider === provider.provider)
-      .flatMap((entry) => entry.windowIds ?? [])
-      .map(normalizedModelScope),
+    entries.flatMap((entry) => entry.windowIds ?? []).map(normalizedModelScope),
   );
   return modelScopes(provider)
     .filter((scope) => !knownScopes.has(scope))
@@ -351,7 +379,7 @@ function normalizedModelScope(windowId: string): string {
   const deduped = windowId.startsWith("model:")
     ? windowId
     : windowId.replace(/_\d+$/, "");
-  return deduped.replace(/:(?:5h|7d|window:[^:]+)$/, "");
+  return deduped.replace(/:(?:5h|7d|window:[^:]+?)(?:_\d+)?$/, "");
 }
 
 function stateSummary(provider: ProviderQuota): ProviderStateSummary {

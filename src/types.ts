@@ -437,6 +437,19 @@ export type ModelCatalogSourceReport = {
   modelCount?: number;
 };
 
+/**
+ * A model window a built-in catalog entry claims for a model, where no live
+ * vendor lineup confirmed that the window's name and the model's name are the
+ * same thing. It is quota-axi's own unverified mapping, disclosed as such.
+ */
+export type UnverifiedWindowAttribution = {
+  provider: ProviderId;
+  /** The provider's own model-scoped window id, normalized to its scope. */
+  windowId: string;
+  /** The built-in model the window was attributed to. */
+  modelId: string;
+};
+
 export type ModelReference = Pick<ModelQuotaRecord, "provider" | "id">;
 
 /** Opt-in ordering keys. Future keys require their own evidence and docs. */
@@ -461,6 +474,8 @@ export type ModelsResponse = {
   models: ModelQuotaRecord[];
   /** Model window scopes that matched no model in the lineup used. */
   unmatchedWindowIds?: string[];
+  /** Built-in window-to-model claims no live vendor lineup confirmed. */
+  unverifiedAttributions?: UnverifiedWindowAttribution[];
   /** Present only when an explicit comparator was requested. */
   sort?: ModelSortResult;
 };

@@ -505,6 +505,11 @@ export function renderModelsToon(
   if (response.unmatchedWindowIds?.length) {
     blocks.push(encode({ unmatchedWindowIds: response.unmatchedWindowIds }));
   }
+  if (response.unverifiedAttributions?.length) {
+    blocks.push(
+      encode({ unverifiedAttributions: response.unverifiedAttributions }),
+    );
+  }
   if (full) {
     const evidence = response.models.map((model) => ({
       provider: model.provider,
@@ -525,6 +530,7 @@ export function renderModelsToon(
       "Default model order is deterministic and non-preferential (provider, then id)",
       "identity=live means the provider named this model itself on this run",
       "identity=unverified means its live catalog was unreadable; see catalogSources.reason",
+      "unverifiedAttributions[] names a window quota-axi mapped to a model on its own, unconfirmed by the vendor",
       "Run `quota-axi models --sort runway` for the documented opt-in runway comparator",
       "Run `quota-axi models --json` for catalog provenance and full quota evidence",
     ]),
