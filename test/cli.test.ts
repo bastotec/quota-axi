@@ -1785,7 +1785,6 @@ function codexBoundConflictQuota(): ProviderQuota {
         modelScope: {
           id: "model:codex_bengalfox",
           name: "codex_bengalfox",
-          period: "session",
         },
       },
       {
@@ -1799,7 +1798,6 @@ function codexBoundConflictQuota(): ProviderQuota {
         modelScope: {
           id: "model:codex_bengalfox",
           name: "codex_bengalfox",
-          period: "weekly",
         },
       },
     ],

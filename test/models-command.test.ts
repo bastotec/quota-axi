@@ -36,7 +36,7 @@ describe("models command", () => {
           kind: "model",
           percentUsed: 20,
           percentRemaining: 80,
-          modelScope: { id: "model:fable", name: "Fable", period: "weekly" },
+          modelScope: { id: "model:fable", name: "Fable" },
         },
       ],
       state: { status: "fresh", stale: false, sourcesTried: ["oauth"] },
@@ -173,7 +173,6 @@ describe("models command", () => {
             modelScope: {
               id: "model:claude_opus_4_5",
               name: "Claude Opus 4.5",
-              period: "weekly",
             },
           },
         ],
@@ -347,7 +346,6 @@ describe("models command", () => {
           modelScope: {
             id: "model:gpt-5.1-codex",
             name: "gpt-5.1-codex",
-            period: "session",
           },
         },
         {
@@ -359,8 +357,6 @@ describe("models command", () => {
           modelScope: {
             id: "model:gpt-5.1-codex",
             name: "gpt-5.1-codex",
-            period: "session",
-            occurrence: 2,
           },
         },
       ],
@@ -395,7 +391,6 @@ describe("models command", () => {
           modelScope: {
             id: "model:codex_bengalfox",
             name: "codex_bengalfox",
-            period: "weekly",
           },
         },
       ],
@@ -451,6 +446,63 @@ describe("models command", () => {
     expect(json.unmatchedWindowIds ?? []).not.toContain(
       "claude/seven_day_opus",
     );
+  });
+
+  /**
+   * Regression: the first matching scope in the vendor's own array order won,
+   * so a family bound listed ahead of the model-specific bound that governs the
+   * same model published the family's remaining and overstated the headroom.
+   */
+  it("binds a model to its most binding scope, not the vendor's first", async () => {
+    PROVIDERS.claude = liveCatalogAdapter(opusFamilyAndModelQuota(), [
+      { id: "claude-opus-4-5-20251101", label: "Claude Opus 4.5" },
+    ]);
+
+    const json = JSON.parse(
+      await capture(["models", "--provider", "claude", "--json"]),
+    );
+    const row = json.models.find(
+      (model: { id: string }) => model.id === "claude-opus-4-5-20251101",
+    );
+
+    expect(row).toMatchObject({
+      quotaScopes: ["model:claude-opus-4-5"],
+      effective: {
+        scope: "model:claude-opus-4-5",
+        effectivePercentRemaining: 0,
+      },
+    });
+  });
+
+  /**
+   * Belt and braces for a model window that reaches the join with no scope at
+   * all: it is named rather than silently dropped out of every disclosure.
+   */
+  it("names a model window carrying no vendor scope as unmatched", async () => {
+    PROVIDERS.claude = liveCatalogAdapter(
+      {
+        provider: "claude",
+        label: "Claude",
+        source: "oauth",
+        windows: [
+          {
+            id: "model:scopeless",
+            label: "Scopeless week",
+            kind: "model",
+            percentUsed: 20,
+            percentRemaining: 80,
+          },
+        ],
+        state: { status: "fresh", stale: false, sourcesTried: ["oauth"] },
+      },
+      [{ id: "claude-opus-4-5-20251101", label: "Claude Opus 4.5" }],
+    );
+
+    const json = JSON.parse(
+      await capture(["models", "--provider", "claude", "--json"]),
+    );
+
+    expect(json.unmatchedWindowIds).toContain("claude/model:scopeless");
   });
 
   it("keeps a live provider's rows out of another provider's buckets", async () => {
@@ -624,7 +676,7 @@ function opusWeekQuota(): ProviderQuota {
         kind: "model",
         percentUsed: 100,
         percentRemaining: 0,
-        modelScope: { id: "seven_day_opus", name: "Opus", period: "weekly" },
+        modelScope: { id: "seven_day_opus", name: "Opus" },
       },
     ],
     state: { status: "fresh", stale: false, sourcesTried: ["oauth"] },
@@ -644,7 +696,42 @@ function fableQuota(): ProviderQuota {
         kind: "model",
         percentUsed: 20,
         percentRemaining: 80,
-        modelScope: { id: "model:fable", name: "Fable", period: "weekly" },
+        modelScope: { id: "model:fable", name: "Fable" },
+      },
+    ],
+    state: { status: "fresh", stale: false, sourcesTried: ["oauth"] },
+  };
+}
+
+/**
+ * A Claude reading where Anthropic meters the same model twice: an id-less
+ * family limit it lists first, and the model-specific limit that governs it.
+ */
+function opusFamilyAndModelQuota(): ProviderQuota {
+  return {
+    provider: "claude",
+    label: "Claude",
+    source: "oauth",
+    windows: [
+      {
+        id: "model:opus",
+        label: "Opus week",
+        kind: "model",
+        percentUsed: 10,
+        percentRemaining: 90,
+        modelScope: { id: "model:opus", name: "Opus" },
+      },
+      {
+        id: "model:claude-opus-4-5",
+        label: "Claude Opus 4.5 week",
+        kind: "model",
+        percentUsed: 100,
+        percentRemaining: 0,
+        modelScope: {
+          id: "model:claude-opus-4-5",
+          modelId: "claude-opus-4-5",
+          name: "Claude Opus 4.5",
+        },
       },
     ],
     state: { status: "fresh", stale: false, sourcesTried: ["oauth"] },

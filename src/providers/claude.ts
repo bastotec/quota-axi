@@ -87,7 +87,6 @@ const SEVEN_DAYS_SECONDS = 604_800;
 const OPUS_WEEK_SCOPE: ModelWindowScope = {
   id: "seven_day_opus",
   name: "Opus",
-  period: "weekly",
 };
 
 type ClaudeCredentials = {
@@ -374,7 +373,8 @@ async function attemptClaudeQuota(
   options: ProviderOptions,
   attempts: SourceAttempt[],
 ): Promise<ClaudeQuotaPass> {
-  const credentialStates = await readCredentialStates(options);
+  const locations = resolveClaudeProfileLocations();
+  const credentialStates = await readCredentialStates(options, locations);
   const credentialCandidates = orderedCredentialCandidates(credentialStates);
 
   for (const state of credentialStates) {
@@ -449,6 +449,11 @@ async function attemptClaudeQuota(
         };
         if (failure.definitiveAuth) {
           definitiveFailure ??= failure;
+          // Anthropic rejected this bearer. The resolution this run shares is
+          // what produced it, so it is dropped rather than left for a later
+          // read in the same command - the vendor's lineup read - to present
+          // the same rejected credential again.
+          options.credentialCache?.invalidate(credentialCacheKey(locations));
           if (state.status === "expired" && state.refreshable) {
             refreshableExpiredRejected = true;
           }
@@ -730,7 +735,6 @@ function normalizeScopedLimitEntry(raw: unknown): QuotaWindow | undefined {
         id,
         ...(modelId ? { modelId } : {}),
         name: modelName,
-        period: "weekly",
       },
     });
   }
@@ -781,8 +785,10 @@ function slugify(value: string): string {
  * Reading the store is the step that can prompt for the macOS Keychain value
  * and the step that decides which account answers, so a run that reads Claude
  * twice - `models` reads quota and then the vendor's lineup - resolves it once
- * and reuses that resolution. The delegated refresh is what invalidates it,
- * because it is the only thing in this process that rewrites the store.
+ * and reuses that resolution. It is invalidated when the store it describes
+ * stops describing a usable session: the delegated refresh rewrites the store,
+ * and a definitive rejection means the credential it carried must not be
+ * presented again by a later read in the same command.
  */
 async function readCredentialStates(
   options: ProviderOptions,

@@ -106,6 +106,7 @@ export function createModelsResponse(
       reason: "no_live_catalog_source",
     };
     catalogSources.push(catalogSourceReport(live));
+    unmatchedWindowIds.push(...scopelessModelWindowIds(provider));
     const providerEntries = catalog.entries.filter(
       (entry) => entry.provider === provider.provider,
     );
@@ -303,6 +304,13 @@ function builtinAttributions(
  * The scope entry whose vendor-declared model scope covers this model, or the
  * provider account scope. The availability entry is joined to the window scope
  * by the adapter's own scope identity, never by taking a scope name apart.
+ *
+ * A vendor can meter one model under more than one scope - a family bound and a
+ * model-specific bound both cover it - and the order it happens to list them in
+ * says nothing about which one governs. The most binding matching scope is the
+ * one reported, so the row never publishes headroom a tighter bound denies. A
+ * scope whose availability is unknown asserts no number, so it answers only
+ * when no matching scope reports one.
  */
 function liveAvailabilityFor(
   model: LiveModelRecord,
@@ -310,13 +318,24 @@ function liveAvailabilityFor(
   scopes: readonly ModelWindowScope[],
 ): EffectiveAvailability | undefined {
   const availability = provider.quotaSemantics?.effectiveAvailability ?? [];
-  const scoped = availability.find((candidate) =>
+  const matching = availability.filter((candidate) =>
     scopes.some(
       (scope) =>
         scope.id === candidate.scope && liveModelMatchesScope(model, scope),
     ),
   );
+  const scoped = matching.reduce<EffectiveAvailability | undefined>(
+    (binding, candidate) =>
+      binding === undefined || bindingRank(candidate) < bindingRank(binding)
+        ? candidate
+        : binding,
+    undefined,
+  );
   return scoped ?? accountAvailability(availability);
+}
+
+function bindingRank(availability: EffectiveAvailability): number {
+  return availability.effectivePercentRemaining ?? Number.POSITIVE_INFINITY;
 }
 
 function builtinAvailabilityFor(
@@ -367,8 +386,16 @@ function unmatchedAgainstBuiltin(
 /**
  * Each model scope this provider reported, once, in window order. A model
  * window whose adapter read no scope structure contributes none: the join
- * declines to guess one back out of the window id.
+ * declines to guess one back out of the window id, and
+ * {@link scopelessModelWindowIds} names it so the loss is disclosed rather
+ * than silent.
  */
+function scopelessModelWindowIds(provider: ProviderQuota): string[] {
+  return provider.windows
+    .filter((window) => window.kind === "model" && !window.modelScope)
+    .map((window) => `${provider.provider}/${window.id}`);
+}
+
 function modelScopes(provider: ProviderQuota): ModelWindowScope[] {
   const seen = new Set<string>();
   const scopes: ModelWindowScope[] = [];

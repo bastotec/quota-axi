@@ -41,7 +41,7 @@ describe("Claude quota parsing", () => {
         windowSeconds: 604_800,
         // Anthropic's own scope word, carried so attribution can reach a
         // window whose id is not `model:`-prefixed at all.
-        modelScope: { id: "seven_day_opus", name: "Opus", period: "weekly" },
+        modelScope: { id: "seven_day_opus", name: "Opus" },
       },
       {
         id: "extra_usage",
@@ -92,7 +92,7 @@ describe("Claude quota parsing", () => {
         windowSeconds: 604_800,
         // The vendor sent no `scope.model.id` for this limit, so the scope
         // carries its display name and no model id is asserted.
-        modelScope: { id: "model:fable", name: "Fable", period: "weekly" },
+        modelScope: { id: "model:fable", name: "Fable" },
       },
       {
         id: "extra_usage",
@@ -132,7 +132,6 @@ describe("Claude quota parsing", () => {
           id: "model:claude-opus-4-5",
           modelId: "claude-opus-4-5",
           name: "Claude Opus 4.5",
-          period: "weekly",
         },
       },
     ]);

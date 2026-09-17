@@ -665,11 +665,11 @@ function namedLimitWindows(
   container: Record<string, unknown>,
   modelSlug?: string,
 ): QuotaWindow[] {
-  // The vendor's own metered-feature or limit id is the scope's identity, and
-  // the period is carried beside it rather than only spelled into the window
-  // id. A limit id such as `codex_bengalfox` is an opaque bucket name, not a
-  // model name, so a model id is asserted only when the vendor sent one; what
-  // is always carried is the vendor's own name for the limit.
+  // The vendor's own metered-feature or limit id is the scope's identity, which
+  // every period of that limit shares. A limit id such as `codex_bengalfox` is
+  // an opaque bucket name, not a model name, so a model id is asserted only
+  // when the vendor sent one; what is always carried is the vendor's own name
+  // for the limit.
   const scope = {
     id: `model:${id}`,
     ...(modelSlug ? { modelId: modelSlug } : {}),
@@ -680,13 +680,13 @@ function namedLimitWindows(
       id: `model:${id}:5h`,
       label: `${label} session`,
       kind: "model",
-      modelScope: { ...scope, period: "session" },
+      modelScope: scope,
     },
     weekly: {
       id: `model:${id}:7d`,
       label: `${label} week`,
       kind: "model",
-      modelScope: { ...scope, period: "weekly" },
+      modelScope: scope,
     },
     unfamiliar(windowSeconds) {
       const duration = readableWindowDuration(windowSeconds);
@@ -694,7 +694,7 @@ function namedLimitWindows(
         id: `model:${id}:window:${duration}`,
         label: `${label} ${duration} window`,
         kind: "model",
-        modelScope: { ...scope, period: "other" },
+        modelScope: scope,
       };
     },
   };
@@ -713,10 +713,8 @@ function namedLimitWindows(
 }
 
 /**
- * Number repeats of an identical vendor window id. The repeat count is recorded
- * on the window's model scope as well as spelled into its id, so nothing has to
- * read it back out of the id, and the scope identity itself is untouched: a
- * repeat bounds the same scope as the window it repeats.
+ * Number repeats of an identical vendor window id. The scope identity itself is
+ * untouched: a repeat bounds the same scope as the window it repeats.
  */
 function deduplicateWindowIds(windows: QuotaWindow[]): QuotaWindow[] {
   const counts = new Map<string, number>();
@@ -724,13 +722,7 @@ function deduplicateWindowIds(windows: QuotaWindow[]): QuotaWindow[] {
     const count = (counts.get(window.id) ?? 0) + 1;
     counts.set(window.id, count);
     if (count === 1) return window;
-    return {
-      ...window,
-      id: `${window.id}_${count}`,
-      ...(window.modelScope
-        ? { modelScope: { ...window.modelScope, occurrence: count } }
-        : {}),
-    };
+    return { ...window, id: `${window.id}_${count}` };
   });
 }
 

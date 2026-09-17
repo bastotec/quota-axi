@@ -7,7 +7,6 @@ import {
 } from "./lib/fs.js";
 import { kimiReadingContextId } from "./providers/kimi-cache-context.js";
 import type {
-  ModelWindowPeriod,
   ModelWindowScope,
   ProviderId,
   ProviderQuota,
@@ -43,12 +42,7 @@ const WINDOW_KINDS = [
   "credits",
   "unknown",
 ] as const satisfies readonly QuotaWindow["kind"][];
-const MODEL_WINDOW_PERIODS = [
-  "session",
-  "weekly",
-  "other",
-] as const satisfies readonly ModelWindowPeriod[];
-const CACHE_SCHEMA_VERSION = 2;
+const CACHE_SCHEMA_VERSION = 3;
 const CREDENTIAL_CONTEXT_ID = /^[a-f0-9]{64}$/;
 
 /**
@@ -188,39 +182,35 @@ function writeCacheFile(file: string, providers: CachedProvider[]): void {
 function readCacheProviders(): CachedProvider[] {
   const raw = readJsonFile(cacheFilePath());
   const payload = objectValue(raw);
-  const schemaVersion = numberValue(payload?.schemaVersion);
   if (
     !payload ||
-    (schemaVersion !== 1 && schemaVersion !== CACHE_SCHEMA_VERSION) ||
+    numberValue(payload.schemaVersion) !== CACHE_SCHEMA_VERSION ||
     !Array.isArray(payload.providers)
   )
     return [];
   return payload.providers
-    .map((provider) => normalizeCachedProvider(provider, schemaVersion))
+    .map((provider) => normalizeCachedProvider(provider))
     .filter((provider): provider is CachedProvider => Boolean(provider));
 }
 
 function toCacheProvider(provider: ProviderQuota): CachedProvider | undefined {
   if (provider.state.status !== "fresh" || provider.windows.length === 0)
     return undefined;
-  const snapshot = normalizeCachedProvider(
-    {
-      provider: provider.provider,
-      label: provider.label,
-      source: provider.source,
-      plan: provider.plan,
-      windows: provider.windows,
-      credits: provider.credits,
-      state: {
-        status: provider.state.status,
-        stale: false,
-        refreshedAt: provider.state.refreshedAt,
-        untrustedWindowIds: provider.state.untrustedWindowIds,
-        sourcesTried: provider.state.sourcesTried,
-      },
+  const snapshot = normalizeCachedProvider({
+    provider: provider.provider,
+    label: provider.label,
+    source: provider.source,
+    plan: provider.plan,
+    windows: provider.windows,
+    credits: provider.credits,
+    state: {
+      status: provider.state.status,
+      stale: false,
+      refreshedAt: provider.state.refreshedAt,
+      untrustedWindowIds: provider.state.untrustedWindowIds,
+      sourcesTried: provider.state.sourcesTried,
     },
-    CACHE_SCHEMA_VERSION,
-  )?.snapshot;
+  })?.snapshot;
   if (!snapshot) return undefined;
   const contextId = CONTEXT_SCOPED_PROVIDERS[provider.provider]?.();
   return {
@@ -240,10 +230,7 @@ function serializeCachedProvider(
   };
 }
 
-function normalizeCachedProvider(
-  raw: unknown,
-  schemaVersion: number,
-): CachedProvider | undefined {
+function normalizeCachedProvider(raw: unknown): CachedProvider | undefined {
   const data = objectValue(raw);
   if (!data) return undefined;
   const provider = literalValue(data.provider, PROVIDER_IDS);
@@ -292,8 +279,7 @@ function normalizeCachedProvider(
   const credentialContext = stringValue(data.credentialContext);
   return {
     snapshot,
-    ...(schemaVersion === CACHE_SCHEMA_VERSION &&
-    snapshot.provider in CONTEXT_SCOPED_PROVIDERS &&
+    ...(snapshot.provider in CONTEXT_SCOPED_PROVIDERS &&
     credentialContext &&
     CREDENTIAL_CONTEXT_ID.test(credentialContext)
       ? { credentialContextId: credentialContext }
@@ -456,9 +442,9 @@ function normalizeCachedWindow(raw: unknown): QuotaWindow | undefined {
 }
 
 /**
- * The window's vendor model scope, or nothing. A snapshot written before scopes
- * were carried simply has none, and a stale reading then attributes no model
- * window rather than guessing the scope back out of the window id.
+ * The window's vendor model scope, or nothing. Snapshots written before scopes
+ * were carried are not reused at all - the schema version they were written
+ * under is no longer accepted - so a scope is never guessed back out of an id.
  */
 function normalizeCachedModelScope(raw: unknown): ModelWindowScope | undefined {
   const data = objectValue(raw);
@@ -467,9 +453,6 @@ function normalizeCachedModelScope(raw: unknown): ModelWindowScope | undefined {
   const result: ModelWindowScope = { id };
   assignString(result, "modelId", data.modelId);
   assignString(result, "name", data.name);
-  const period = literalValue(data.period, MODEL_WINDOW_PERIODS);
-  if (period) result.period = period;
-  assignNumber(result, "occurrence", data.occurrence);
   return result;
 }
 

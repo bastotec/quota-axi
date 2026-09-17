@@ -368,6 +368,44 @@ describe("Claude live model catalog", () => {
     expect(valueReads).toHaveLength(1);
   });
 
+  /**
+   * Regression: the shared resolution was invalidated only by the refresh
+   * delegate, so after Anthropic definitively rejected a bearer the lineup read
+   * re-presented the very credential the quota read had just seen rejected,
+   * even though the store on disk no longer held it.
+   */
+  it("re-resolves the store after a definitive rejection", async () => {
+    useTempHome();
+    writeCredentials("rejected-token");
+    const fetchMock = vi.fn(async (_url: unknown, init: RequestInit) =>
+      (init.headers as Record<string, string>).authorization ===
+      "Bearer rotated-token"
+        ? jsonResponse({
+            data: [{ id: "claude-opus-5", display_name: "Claude Opus 5" }],
+          })
+        : new Response(null, { status: 401 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { createProviderCredentialCache } =
+      await import("../../src/providers/credential-cache.js");
+    const { fetchModelCatalog, fetchQuota } =
+      await import("../../src/providers/claude.js");
+    const options = {
+      allowKeychainPrompt: false,
+      refreshCredentials: false,
+      credentialCache: createProviderCredentialCache(),
+    };
+
+    const quota = await fetchQuota(options);
+    expect(quota.state.status).not.toBe("fresh");
+
+    // Whoever owns the store rotated it between the two reads.
+    writeCredentials("rotated-token");
+
+    expect(await fetchModelCatalog(options)).toMatchObject({ status: "live" });
+  });
+
   it("reads the store again for each read when no cache is shared", async () => {
     usePlatform("darwin");
     useTempHome();

@@ -176,12 +176,6 @@ export type BoundConflict = {
 };
 
 /**
- * Which of a model scope's periods one window meters. `other` is a duration the
- * vendor reported that quota-axi has no fixed name for.
- */
-export type ModelWindowPeriod = "session" | "weekly" | "other";
-
-/**
  * The model scope of a `kind: "model"` window, in the vendor's own terms.
  *
  * The adapter that read the vendor's response attaches the structure the vendor
@@ -207,17 +201,6 @@ export type ModelWindowScope = {
    * a name quota-axi invented, and never an identifier it derived.
    */
   name?: string;
-  /**
-   * Which period of the scope this window meters, when the vendor meters more
-   * than one. Carried rather than spelled only into the window id, so nothing
-   * downstream recovers it by parsing.
-   */
-  period?: ModelWindowPeriod;
-  /**
-   * 2 and up when the vendor reported an otherwise identical scope window more
-   * than once in the same response. Carried for the same reason as `period`.
-   */
-  occurrence?: number;
 };
 
 export type QuotaWindow = {

@@ -132,7 +132,7 @@ function quotaResponse(): QuotaAxiResponse {
             id: "model:fable",
             label: "Fable",
             kind: "model",
-            modelScope: { id: "model:fable", name: "Fable", period: "weekly" },
+            modelScope: { id: "model:fable", name: "Fable" },
           },
           {
             id: "model:unmapped:5h",
@@ -141,7 +141,6 @@ function quotaResponse(): QuotaAxiResponse {
             modelScope: {
               id: "model:unmapped",
               name: "unmapped",
-              period: "session",
             },
           },
           {
@@ -151,7 +150,6 @@ function quotaResponse(): QuotaAxiResponse {
             modelScope: {
               id: "model:unmapped",
               name: "unmapped",
-              period: "weekly",
             },
           },
         ],

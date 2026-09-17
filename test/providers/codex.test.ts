@@ -219,7 +219,6 @@ describe("Codex quota parsing", () => {
           id: "model:codex_bengalfox",
           modelId: "gpt-5.3-codex-spark",
           name: "GPT-5.3-Codex-Spark",
-          period: "weekly",
         },
       },
       {
@@ -228,7 +227,6 @@ describe("Codex quota parsing", () => {
           id: "model:codex_reviewfeature",
           modelId: "gpt-review-1",
           name: "GPT-Review",
-          period: "session",
         },
       },
     ]);
@@ -250,7 +248,6 @@ describe("Codex quota parsing", () => {
     expect(result?.windows[0]?.modelScope).toEqual({
       id: "model:codex_bengalfox",
       name: "GPT-5.3-Codex-Spark",
-      period: "weekly",
     });
   });
 

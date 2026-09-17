@@ -309,7 +309,6 @@ describe("quota semantics", () => {
           modelScope: {
             id: "model:qwen3-max",
             name: "qwen3-max",
-            occurrence: 2,
           },
         }),
       ]),

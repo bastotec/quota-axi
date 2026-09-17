@@ -26,7 +26,6 @@ describe("liveModelMatchesScope", () => {
     const opusScope: ModelWindowScope = {
       id: "seven_day_opus",
       name: "Opus",
-      period: "weekly",
     };
 
     expect(
