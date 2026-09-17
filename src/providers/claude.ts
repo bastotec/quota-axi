@@ -34,6 +34,7 @@ import {
   successProvider,
   withRemaining,
 } from "./common.js";
+import { credentialDiscriminator } from "./credential-cache.js";
 import {
   refreshDelegateAttempt,
   runRefreshDelegate,
@@ -61,6 +62,19 @@ const KEYCHAIN_PRESENCE_TIMEOUT_MS = 5_000;
 /** `security` exit 44 is cannot-reach (locked, TCC, daemon), not item-absent. */
 const KEYCHAIN_ITEM_UNREACHABLE_EXIT_CODE = 44;
 const KEYCHAIN_UNREACHABLE_ERROR = "keychain_unreachable";
+/**
+ * Anthropic's own verdict on a bearer it rejected with HTTP 401. A read that
+ * withholds an already-rejected credential reports this same verdict, because
+ * it is what presenting that credential a second time would have produced.
+ */
+const CLAUDE_SIGN_IN_REQUIRED = "Claude sign-in required";
+/**
+ * A stored credential that was not sent because this run already watched
+ * Anthropic definitively reject it. Recorded on the attempt so `--full` shows
+ * why no request was made, rather than the read looking like it never had a
+ * credential at all.
+ */
+const CREDENTIAL_REJECTED_THIS_RUN = "credential_rejected_this_run";
 const DEFAULT_KEYCHAIN_SERVICE = "Claude Code-credentials";
 const DEFAULT_KEYCHAIN_ACCOUNT = "claude-code-user";
 const SAFE_KEYCHAIN_ACCOUNT = /^[a-zA-Z0-9._-]+$/;
@@ -121,6 +135,10 @@ type CredentialState =
   | AdvisoryExpiredCredentialState
   | UnavailableCredentialState
   | SkippedCredentialState;
+/** A resolved credential a read may actually present to Anthropic. */
+type ClaudeCredentialCandidate =
+  | AvailableCredentialState
+  | AdvisoryExpiredCredentialState;
 type KeychainItemPresence = "present" | "missing" | "unknown";
 type ClaudeAccount = NonNullable<ProviderQuota["account"]>;
 type ClaudeIdentityResult = {
@@ -234,6 +252,18 @@ export async function fetchQuota(
     } else {
       const run = await runRefreshDelegate(CLAUDE_CLI_REFRESH_DELEGATE);
       attempts.push(refreshDelegateAttempt(CLAUDE_CLI_REFRESH_DELEGATE, run));
+      // Only an outcome where the CLI actually got to run can have rewritten
+      // the store, so only those drop the resolution this run shares. An
+      // unavailable CLI and a spawn failure started no process at all, and
+      // re-resolving there would buy nothing but a second macOS Keychain value
+      // read. Dropping the resolution is a statement about the store, never a
+      // verdict on the credential it held: if the CLI rotated nothing, the same
+      // token resolves again and stays withheld by the rejection latch.
+      if (run.status === "ran" || run.status === "unconfirmed") {
+        options.credentialCache?.invalidate(
+          credentialCacheKey(resolveClaudeProfileLocations()),
+        );
+      }
       if (run.status === "ran") {
         const retry = await attemptClaudeQuota(options, attempts);
         if (retry.kind === "success") return retry.report;
@@ -339,12 +369,10 @@ function unconfirmedRefreshFailure(): ClaudeFailure {
  */
 function orderedCredentialCandidates(
   states: readonly CredentialState[],
-): (AvailableCredentialState | AdvisoryExpiredCredentialState)[] {
+): ClaudeCredentialCandidate[] {
   return states
     .filter(
-      (
-        state,
-      ): state is AvailableCredentialState | AdvisoryExpiredCredentialState =>
+      (state): state is ClaudeCredentialCandidate =>
         state.status === "available" || state.status === "expired",
     )
     .sort((a, b) => {
@@ -396,79 +424,115 @@ async function attemptClaudeQuota(
   let definitiveFailure: ClaudeFailure | undefined;
   let transientFailure: ClaudeFailure | undefined;
   let refreshableExpiredRejected = false;
+  let presentedAnyCredential = false;
+  let withheldAnyCredential = false;
 
-  if (credentialCandidates.length > 0) {
-    for (const state of credentialCandidates) {
-      const credential = state.credentials;
-      attempts.push({ source: credential.source, status: "failed" });
-      try {
-        const quota = await fetchOauthUsage(credential);
-        attempts[attempts.length - 1] = {
-          source: credential.source,
-          status: "success",
-        };
-        attempts.push(
-          quota.identityError
-            ? {
-                source: "oauth-profile",
-                status: "failed",
-                error: quota.identityError,
-                // The identity lookup is not a credential source, so its
-                // failure never marks a source as superseded; `account`
-                // already reports the unverified identity.
-                degraded: false,
-              }
-            : { source: "oauth-profile", status: "success" },
+  for (const state of credentialCandidates) {
+    const credential = state.credentials;
+    // The latch is consulted per candidate, so a token Anthropic rejected
+    // earlier is withheld even when a sibling store holds the same value or
+    // the delegated refresh rotated nothing. It is withheld and named, not
+    // sent a second time.
+    if (isRejectedClaudeCredential(options, credential)) {
+      withheldAnyCredential = true;
+      attempts.push({
+        source: credential.source,
+        status: "skipped",
+        error: CREDENTIAL_REJECTED_THIS_RUN,
+        credentialPresent: true,
+      });
+      continue;
+    }
+    presentedAnyCredential = true;
+    attempts.push({ source: credential.source, status: "failed" });
+    try {
+      const quota = await fetchOauthUsage(credential);
+      attempts[attempts.length - 1] = {
+        source: credential.source,
+        status: "success",
+      };
+      attempts.push(
+        quota.identityError
+          ? {
+              source: "oauth-profile",
+              status: "failed",
+              error: quota.identityError,
+              // The identity lookup is not a credential source, so its
+              // failure never marks a source as superseded; `account`
+              // already reports the unverified identity.
+              degraded: false,
+            }
+          : { source: "oauth-profile", status: "success" },
+      );
+      return {
+        kind: "success",
+        report: successProvider({
+          provider: "claude",
+          label: "Claude",
+          source: "oauth",
+          plan: quota.plan,
+          account: quota.account,
+          windows: quota.windows,
+          refreshedAt: quota.refreshedAt,
+          sourcesTried: sourceNames(attempts),
+          attempts,
+        }),
+      };
+    } catch (error) {
+      const failure = claudeFailureFor(error);
+      attempts[attempts.length - 1] = {
+        source: credential.source,
+        status: "failed",
+        error: failure.code,
+      };
+      if (failure.definitiveAuth) {
+        definitiveFailure ??= failure;
+        // Anthropic rejected this bearer outright, so no later read in this
+        // run presents it again - not the post-refresh retry, and not the
+        // model-lineup read. The latch is on the credential, so a rotation
+        // that replaces it is unaffected and a sibling store holding the
+        // same token is covered.
+        options.credentialCache?.rejectCredential(
+          claudeCredentialId(credential),
         );
-        return {
-          kind: "success",
-          report: successProvider({
-            provider: "claude",
-            label: "Claude",
-            source: "oauth",
-            plan: quota.plan,
-            account: quota.account,
-            windows: quota.windows,
-            refreshedAt: quota.refreshedAt,
-            sourcesTried: sourceNames(attempts),
-            attempts,
-          }),
-        };
-      } catch (error) {
-        const failure = claudeFailureFor(error);
-        attempts[attempts.length - 1] = {
-          source: credential.source,
-          status: "failed",
-          error: failure.code,
-        };
-        if (failure.definitiveAuth) {
-          definitiveFailure ??= failure;
-          if (state.status === "expired" && state.refreshable) {
-            refreshableExpiredRejected = true;
-          }
-        } else {
-          transientFailure = failure.withUsageFetchFailure();
-          break;
+        if (state.status === "expired" && state.refreshable) {
+          refreshableExpiredRejected = true;
         }
+      } else {
+        transientFailure = failure.withUsageFetchFailure();
+        break;
       }
     }
-  } else {
-    const skipped = credentialStates.find(
-      (state): state is SkippedCredentialState => state.status === "skipped",
-    );
-    if (skipped) {
-      transientFailure = new ClaudeFailure(
-        skipped.source.error ?? "Claude quota unavailable",
-        { staleEligible: true },
-      );
+  }
+
+  if (!presentedAnyCredential) {
+    if (withheldAnyCredential) {
+      // Withheld, not absent. Every credential this profile offers was already
+      // definitively rejected in this run, so the verdict is Anthropic's own -
+      // the one a second round of identical 401s would have produced - and never
+      // the `credentials_missing` a bare empty candidate list would imply.
+      definitiveFailure = new ClaudeFailure(CLAUDE_SIGN_IN_REQUIRED, {
+        status: "auth_required",
+        definitiveAuth: true,
+      });
     } else {
-      const invalid = credentialStates.some(
-        (state) => state.status === "invalid",
+      const skipped = credentialStates.find(
+        (state): state is SkippedCredentialState => state.status === "skipped",
       );
-      definitiveFailure = new ClaudeFailure(
-        invalid ? "credentials_invalid" : "credentials_missing",
-        { status: "auth_required", definitiveAuth: true },
-      );
+      if (skipped) {
+        transientFailure = new ClaudeFailure(
+          skipped.source.error ?? "Claude quota unavailable",
+          { staleEligible: true },
+        );
+      } else {
+        const invalid = credentialStates.some(
+          (state) => state.status === "invalid",
+        );
+        definitiveFailure = new ClaudeFailure(
+          invalid ? "credentials_invalid" : "credentials_missing",
+          { status: "auth_required", definitiveAuth: true },
+        );
+      }
     }
   }
 
@@ -768,9 +832,66 @@ function slugify(value: string): string {
     .replace(/^_+|_+$/g, "");
 }
 
+/**
+ * Every credential this profile can offer, resolved once per command.
+ *
+ * Reading the store is the step that can prompt for the macOS Keychain value
+ * and the step that decides which account answers, so a run that reads Claude
+ * twice - `models` reads quota and then the vendor's lineup - resolves it once
+ * and reuses that resolution. It is invalidated only when quota-axi itself
+ * knows the store was rewritten, which is the delegated refresh; that is a
+ * statement about the store, not about any credential it produced, so it is
+ * never what keeps a rejected credential out of a later read. The rejection
+ * latch does that, and it holds across both a reused resolution and a
+ * re-resolved one.
+ */
 async function readCredentialStates(
   options: ProviderOptions,
   locations = resolveClaudeProfileLocations(),
+): Promise<CredentialState[]> {
+  const resolve = () => resolveCredentialStates(options, locations);
+  return options.credentialCache
+    ? options.credentialCache.read(credentialCacheKey(locations), resolve)
+    : resolve();
+}
+
+function credentialCacheKey(locations: ClaudeProfileLocations): string {
+  return `claude:${locations.credentialFile}:${locations.keychainService}`;
+}
+
+/**
+ * This run's non-secret discriminator for a stored Claude credential. Claude's
+ * two stores can hold the same token, and `claude doctor` replaces the token
+ * behind an unchanged store path, so the latch keys on the credential rather
+ * than on the source that carried it.
+ */
+function claudeCredentialId(credentials: ClaudeCredentials): string {
+  return credentialDiscriminator("claude", credentials.accessToken);
+}
+
+/**
+ * Whether this run already watched Anthropic definitively reject exactly this
+ * credential. Consulted immediately before each candidate would be presented,
+ * so a latch set earlier in the same pass - by a sibling store holding the same
+ * token - withholds it too.
+ *
+ * Withholding is not the same as having no credential: the caller reports the
+ * rejection that produced the latch, never a missing or absent store.
+ */
+function isRejectedClaudeCredential(
+  options: ProviderOptions,
+  credentials: ClaudeCredentials,
+): boolean {
+  return (
+    options.credentialCache?.isCredentialRejected(
+      claudeCredentialId(credentials),
+    ) ?? false
+  );
+}
+
+async function resolveCredentialStates(
+  options: ProviderOptions,
+  locations: ClaudeProfileLocations,
 ): Promise<CredentialState[]> {
   const states: CredentialState[] = [];
 
@@ -1136,7 +1257,7 @@ function unverifiedClaudeIdentity(error: string): ClaudeIdentityResult {
 // for a sign-out verdict. 429 follows standard Retry-After semantics (RFC 9110).
 function rejectUnusableUsageResponse(response: Response): void {
   if (response.status === 401) {
-    throw new ClaudeFailure("Claude sign-in required", {
+    throw new ClaudeFailure(CLAUDE_SIGN_IN_REQUIRED, {
       status: "auth_required",
       definitiveAuth: true,
     });
@@ -1289,11 +1410,16 @@ class ClaudeFailure extends Error {
  *
  * It reuses the quota path's stored credentials read-only and never refreshes:
  * a model listing is not worth spending a single-use refresh-token exchange on,
- * and the quota read in the same run already owns that decision. Only a
- * 401 moves to the next credential, the same status the usage read treats as
- * definitive; every other failure, 403 included, stops there, because promoting
- * a sibling store on a WAF denial or a 503 could publish one account's lineup
- * beside another account's windows.
+ * and the quota read in the same run already owns that decision. When the run
+ * shares a credential cache, it reuses that read's resolution rather than
+ * resolving the store again - one macOS Keychain value read per command, and
+ * one account answering both halves - and it never presents a credential that
+ * read already watched Anthropic reject.
+ *
+ * Only a 401 moves to the next credential, the same status the usage read
+ * treats as definitive; every other failure, 403 included, stops there, because
+ * promoting a sibling store on a WAF denial or a 503 could publish one
+ * account's lineup beside another account's windows.
  */
 export async function fetchModelCatalog(
   options: ProviderOptions,
@@ -1301,16 +1427,19 @@ export async function fetchModelCatalog(
   const candidates = orderedCredentialCandidates(
     await readCredentialStates(options),
   );
-  if (candidates.length === 0) {
-    return {
-      provider: "claude",
-      status: "unavailable",
-      reason: "no_credential",
-    };
-  }
 
   let reason = "catalog_unavailable";
+  let presentedAnyCredential = false;
+  let withheldAnyCredential = false;
   for (const state of candidates) {
+    // Checked per candidate, so a bearer latched closed a moment ago - by the
+    // quota read, or by the 401 a sibling store's identical token just drew
+    // below - never reaches the listing endpoint.
+    if (isRejectedClaudeCredential(options, state.credentials)) {
+      withheldAnyCredential = true;
+      continue;
+    }
+    presentedAnyCredential = true;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
     try {
@@ -1326,7 +1455,15 @@ export async function fetchModelCatalog(
       });
       if (!response.ok) {
         reason = `catalog_http_${response.status}`;
-        if (response.status === 401) continue;
+        if (response.status === 401) {
+          // Anthropic's own definitive rejection, the same status the usage
+          // read treats as definitive, so this bearer is latched closed for
+          // the rest of the run rather than only for this loop.
+          options.credentialCache?.rejectCredential(
+            claudeCredentialId(state.credentials),
+          );
+          continue;
+        }
         break;
       }
       const payload: unknown = await response.json();
@@ -1351,6 +1488,18 @@ export async function fetchModelCatalog(
     } finally {
       clearTimeout(timer);
     }
+  }
+  if (!presentedAnyCredential) {
+    return {
+      provider: "claude",
+      status: "unavailable",
+      // A credential the quota read watched Anthropic reject is withheld, not
+      // absent: the listing endpoint never sees it, and the gap is disclosed
+      // as the rejection it is rather than as a missing store.
+      reason: withheldAnyCredential
+        ? CREDENTIAL_REJECTED_THIS_RUN
+        : "no_credential",
+    };
   }
   return { provider: "claude", status: "unavailable", reason };
 }

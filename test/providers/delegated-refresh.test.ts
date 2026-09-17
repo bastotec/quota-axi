@@ -439,6 +439,68 @@ describe.skipIf(process.platform === "win32")(
       ]);
     });
 
+    /**
+     * A run that shares a credential cache must not present the rejected
+     * bearer twice. `claude doctor` ran and exited cleanly without rotating
+     * anything, so the store still holds the token Anthropic already rejected:
+     * dropping the shared resolution re-reads it, and only the rejection latch
+     * keeps it out of the retry's request.
+     */
+    it("does not re-present a rejected bearer when the delegate rotated nothing", async () => {
+      writeExpiredClaudeCredential();
+      const cli = stubClaudeCli();
+      const { requests } = stubBearerAwareFetch("never-issued-token");
+
+      const { createProviderCredentialCache } =
+        await import("../../src/providers/credential-cache.js");
+      const { fetchQuota } = await import("../../src/providers/claude.js");
+      const result = await fetchQuota({
+        allowKeychainPrompt: false,
+        refreshCredentials: true,
+        credentialCache: createProviderCredentialCache(),
+      });
+
+      expect(cli.invocationCount()).toBe(1);
+      // One usage request, not two: the retry withheld the bearer instead of
+      // collecting a second identical 401.
+      expect(requests.map((request) => request.url)).toEqual([USAGE_URL]);
+      expect(result.attempts).toContainEqual({
+        source: "oauth-file",
+        status: "skipped",
+        error: "credential_rejected_this_run",
+        credentialPresent: true,
+      });
+      // Withholding changes how the verdict was reached, never what it is:
+      // Anthropic's own rejection stands, and it is not downgraded to a
+      // missing or absent credential.
+      expect(result.state.status).toBe("auth_required");
+      expect(result.state.error).toBe("Claude sign-in required");
+    });
+
+    it("presents the rotated bearer the delegate did write", async () => {
+      writeExpiredClaudeCredential();
+      stubClaudeCli({ rotateTo: "rotated-access-token" });
+      const { requests } = stubBearerAwareFetch("rotated-access-token");
+
+      const { createProviderCredentialCache } =
+        await import("../../src/providers/credential-cache.js");
+      const { fetchQuota } = await import("../../src/providers/claude.js");
+      const result = await fetchQuota({
+        allowKeychainPrompt: false,
+        refreshCredentials: true,
+        credentialCache: createProviderCredentialCache(),
+      });
+
+      // The latch is on the credential, so the token the CLI wrote in the
+      // rejected one's place inherits nothing from it.
+      expect(result.state.status).toBe("fresh");
+      expect(requests.map((request) => request.url)).toEqual([
+        USAGE_URL,
+        USAGE_URL,
+        PROFILE_URL,
+      ]);
+    });
+
     it("never performs the refresh-token exchange itself", async () => {
       writeExpiredClaudeCredential();
       stubClaudeCli({ rotateTo: "rotated-access-token" });
