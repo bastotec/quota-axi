@@ -1256,9 +1256,10 @@ class ClaudeFailure extends Error {
  * It reuses the quota path's stored credentials read-only and never refreshes:
  * a model listing is not worth spending a single-use refresh-token exchange on,
  * and the quota read in the same run already owns that decision. Only a
- * first-party 401/403 moves to the next credential; a transient failure stops
- * there, because promoting a sibling store on a 503 could publish one account's
- * lineup beside another account's windows.
+ * 401 moves to the next credential, the same status the usage read treats as
+ * definitive; every other failure, 403 included, stops there, because promoting
+ * a sibling store on a WAF denial or a 503 could publish one account's lineup
+ * beside another account's windows.
  */
 export async function fetchModelCatalog(
   options: ProviderOptions,
@@ -1291,7 +1292,7 @@ export async function fetchModelCatalog(
       });
       if (!response.ok) {
         reason = `catalog_http_${response.status}`;
-        if (response.status === 401 || response.status === 403) continue;
+        if (response.status === 401) continue;
         break;
       }
       const payload: unknown = await response.json();

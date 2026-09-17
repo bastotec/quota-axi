@@ -285,37 +285,41 @@ describe("Claude live model catalog", () => {
     );
   });
 
-  it("stops at a transient failure instead of promoting a sibling credential", async () => {
-    usePlatform("darwin");
-    useTempHome();
-    writeCredentials("file-token");
-    const execFileText = vi.fn(async () =>
-      JSON.stringify({ claudeAiOauth: { accessToken: "keychain-token" } }),
-    );
-    vi.doMock("../../src/lib/process.js", () => ({ execFileText }));
-    const fetchMock = vi.fn(async (_url: unknown, init: RequestInit) =>
-      (init.headers as Record<string, string>).authorization ===
-      "Bearer keychain-token"
-        ? new Response(null, { status: 503 })
-        : jsonResponse({
-            data: [{ id: "claude-opus-5", display_name: "Claude Opus 5" }],
-          }),
-    );
-    vi.stubGlobal("fetch", fetchMock);
+  it.each([503, 403])(
+    "stops at a non-definitive %i instead of promoting a sibling credential",
+    async (status) => {
+      usePlatform("darwin");
+      useTempHome();
+      writeCredentials("file-token");
+      const execFileText = vi.fn(async () =>
+        JSON.stringify({ claudeAiOauth: { accessToken: "keychain-token" } }),
+      );
+      vi.doMock("../../src/lib/process.js", () => ({ execFileText }));
+      const fetchMock = vi.fn(async (_url: unknown, init: RequestInit) =>
+        (init.headers as Record<string, string>).authorization ===
+        "Bearer keychain-token"
+          ? new Response(null, { status })
+          : jsonResponse({
+              data: [{ id: "claude-opus-5", display_name: "Claude Opus 5" }],
+            }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
 
-    const { fetchModelCatalog } = await import("../../src/providers/claude.js");
-    const catalog = await fetchModelCatalog({
-      allowKeychainPrompt: true,
-      refreshCredentials: false,
-    });
+      const { fetchModelCatalog } =
+        await import("../../src/providers/claude.js");
+      const catalog = await fetchModelCatalog({
+        allowKeychainPrompt: true,
+        refreshCredentials: false,
+      });
 
-    expect(catalog).toEqual({
-      provider: "claude",
-      status: "unavailable",
-      reason: "catalog_http_503",
-    });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
+      expect(catalog).toEqual({
+        provider: "claude",
+        status: "unavailable",
+        reason: `catalog_http_${status}`,
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it("falls through to a sibling credential source after a rejection", async () => {
     usePlatform("darwin");
