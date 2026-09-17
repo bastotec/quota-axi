@@ -1782,6 +1782,11 @@ function codexBoundConflictQuota(): ProviderQuota {
         percentRemaining: 92,
         startsAt: "2026-09-07T05:27:00.000Z",
         resetsAt: "2026-09-07T10:27:00.000Z",
+        modelScope: {
+          id: "model:codex_bengalfox",
+          name: "codex_bengalfox",
+          period: "session",
+        },
       },
       {
         id: "model:codex_bengalfox:7d",
@@ -1791,6 +1796,11 @@ function codexBoundConflictQuota(): ProviderQuota {
         percentRemaining: 96,
         startsAt: "2026-09-07T05:27:00.000Z",
         resetsAt: "2026-09-14T05:27:00.000Z",
+        modelScope: {
+          id: "model:codex_bengalfox",
+          name: "codex_bengalfox",
+          period: "weekly",
+        },
       },
     ],
     state: { status: "fresh", stale: false, sourcesTried: ["cli-rpc"] },

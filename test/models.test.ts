@@ -128,9 +128,32 @@ function quotaResponse(): QuotaAxiResponse {
         source: "oauth",
         windows: [
           { id: "five_hour", label: "session", kind: "session" },
-          { id: "model:fable", label: "Fable", kind: "model" },
-          { id: "model:unmapped:5h", label: "Unmapped 5h", kind: "model" },
-          { id: "model:unmapped:7d", label: "Unmapped 7d", kind: "model" },
+          {
+            id: "model:fable",
+            label: "Fable",
+            kind: "model",
+            modelScope: { id: "model:fable", name: "Fable", period: "weekly" },
+          },
+          {
+            id: "model:unmapped:5h",
+            label: "Unmapped 5h",
+            kind: "model",
+            modelScope: {
+              id: "model:unmapped",
+              name: "unmapped",
+              period: "session",
+            },
+          },
+          {
+            id: "model:unmapped:7d",
+            label: "Unmapped 7d",
+            kind: "model",
+            modelScope: {
+              id: "model:unmapped",
+              name: "unmapped",
+              period: "weekly",
+            },
+          },
         ],
         quotaSemantics: {
           status: "known",
@@ -244,6 +267,7 @@ function quotaResponseWithRunways(): QuotaAxiResponse {
           id: `model:${id}`,
           label: id,
           kind: "model" as const,
+          modelScope: { id: `model:${id}`, name: id },
         })),
         quotaSemantics: {
           status: "known",

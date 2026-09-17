@@ -152,19 +152,11 @@ function alibabaSemantics(
         : availability("all_models", account, generatedAt),
     );
   }
-  const models = new Map<string, QuotaWindow[]>();
-  for (const window of modelWindows) {
-    const scope = window.label;
-    const scoped = models.get(scope) ?? [];
-    scoped.push(window);
-    models.set(scope, scoped);
-  }
-  for (const [scope, scoped] of models) {
-    const modelScope = scoped[0]?.id ?? scope;
+  for (const [scope, scoped] of modelScopeGroups(modelWindows)) {
     effectiveAvailability.push(
       unresolved.length > 0
-        ? unresolvedAvailability(modelScope, scoped, unresolvedIds)
-        : availability(modelScope, scoped, generatedAt),
+        ? unresolvedAvailability(scope, scoped, unresolvedIds)
+        : availability(scope, scoped, generatedAt),
     );
   }
   if (unresolved.length > 0) {
@@ -208,9 +200,9 @@ function claudeSemantics(
       availability("all_models", account, generatedAt),
     );
   }
-  for (const model of models) {
+  for (const [scope, scoped] of modelScopeGroups(models)) {
     effectiveAvailability.push(
-      availability(model.id, [...account, model], generatedAt),
+      availability(scope, [...account, ...scoped], generatedAt),
     );
   }
   return knownSemantics(
@@ -231,13 +223,7 @@ function codexSemantics(
       id.startsWith("code_review_window:"),
   );
   const modelWindows = windows.filter(({ kind }) => kind === "model");
-  const models = new Map<string, QuotaWindow[]>();
-  for (const window of modelWindows) {
-    const scope = codexModelScope(window.id);
-    const scoped = models.get(scope) ?? [];
-    scoped.push(window);
-    models.set(scope, scoped);
-  }
+  const models = modelScopeGroups(modelWindows);
   const recognized = new Set([...account, ...codeReview, ...modelWindows]);
   const unresolved = windows.filter((window) => !recognized.has(window));
   if (unresolved.length > 0) {
@@ -591,8 +577,27 @@ function isCodexAccountWindow(window: QuotaWindow): boolean {
   );
 }
 
-function codexModelScope(id: string): string {
-  return id.replace(/_\d+$/, "").replace(/:(?:5h|7d|window:[^:]+)$/, "");
+/**
+ * Group model windows by the scope their adapter read from the vendor, in first
+ * appearance order.
+ *
+ * The key is the adapter's own scope identity, so the periods and repeats a
+ * vendor spells into a window id never have to be recovered from that id here.
+ * A model window carrying no scope structure - a snapshot cached before scopes
+ * were carried - keys on its own id, which is what the scope identity spelled
+ * for a single-period window anyway.
+ */
+function modelScopeGroups(
+  windows: readonly QuotaWindow[],
+): Map<string, QuotaWindow[]> {
+  const groups = new Map<string, QuotaWindow[]>();
+  for (const window of windows) {
+    const scope = window.modelScope?.id ?? window.id;
+    const scoped = groups.get(scope) ?? [];
+    scoped.push(window);
+    groups.set(scope, scoped);
+  }
+  return groups;
 }
 
 function knownSemantics(

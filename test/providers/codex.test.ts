@@ -185,6 +185,75 @@ describe("Codex quota parsing", () => {
     ]);
   });
 
+  /**
+   * The vendor documents `normal_model_slug` / `normalModelSlug` as "the normal
+   * model whose display name and reasoning options describe this quota alias",
+   * so it is the vendor's own answer to which model an opaque limit id such as
+   * `codex_bengalfox` meters. Reading it keeps that identity the vendor's.
+   */
+  it("carries the vendor's own model slug for a named limit", () => {
+    const result = normalizeCodexUsage({
+      additional_rate_limits: [
+        {
+          metered_feature: "codex_bengalfox",
+          limit_name: "GPT-5.3-Codex-Spark",
+          normal_model_slug: "gpt-5.3-codex-spark",
+          rate_limit: {
+            primary_window: { used_percent: 33, limit_window_seconds: 604_800 },
+          },
+        },
+      ],
+      rateLimitsByLimitId: {
+        codex_reviewfeature: {
+          limitName: "GPT-Review",
+          normalModelSlug: "gpt-review-1",
+          primary: { usedPercent: 10, windowDurationMins: 300 },
+        },
+      },
+    });
+
+    expect(result?.windows).toMatchObject([
+      {
+        id: "model:codex_bengalfox:7d",
+        modelScope: {
+          id: "model:codex_bengalfox",
+          modelId: "gpt-5.3-codex-spark",
+          name: "GPT-5.3-Codex-Spark",
+          period: "weekly",
+        },
+      },
+      {
+        id: "model:codex_reviewfeature:5h",
+        modelScope: {
+          id: "model:codex_reviewfeature",
+          modelId: "gpt-review-1",
+          name: "GPT-Review",
+          period: "session",
+        },
+      },
+    ]);
+  });
+
+  it("asserts no model id when the vendor sent no model slug", () => {
+    const result = normalizeCodexUsage({
+      additional_rate_limits: [
+        {
+          metered_feature: "codex_bengalfox",
+          limit_name: "GPT-5.3-Codex-Spark",
+          rate_limit: {
+            primary_window: { used_percent: 33, limit_window_seconds: 604_800 },
+          },
+        },
+      ],
+    });
+
+    expect(result?.windows[0]?.modelScope).toEqual({
+      id: "model:codex_bengalfox",
+      name: "GPT-5.3-Codex-Spark",
+      period: "weekly",
+    });
+  });
+
   it("preserves unfamiliar periods honestly instead of thresholding them", () => {
     const result = normalizeCodexUsage({
       rate_limit: {

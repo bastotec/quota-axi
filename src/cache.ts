@@ -7,6 +7,8 @@ import {
 } from "./lib/fs.js";
 import { kimiReadingContextId } from "./providers/kimi-cache-context.js";
 import type {
+  ModelWindowPeriod,
+  ModelWindowScope,
   ProviderId,
   ProviderQuota,
   ProviderSource,
@@ -41,6 +43,11 @@ const WINDOW_KINDS = [
   "credits",
   "unknown",
 ] as const satisfies readonly QuotaWindow["kind"][];
+const MODEL_WINDOW_PERIODS = [
+  "session",
+  "weekly",
+  "other",
+] as const satisfies readonly ModelWindowPeriod[];
 const CACHE_SCHEMA_VERSION = 2;
 const CREDENTIAL_CONTEXT_ID = /^[a-f0-9]{64}$/;
 
@@ -443,6 +450,26 @@ function normalizeCachedWindow(raw: unknown): QuotaWindow | undefined {
   assignNumber(result, "windowSeconds", data.windowSeconds);
   assignNumber(result, "spentUsd", data.spentUsd);
   assignNumber(result, "limitUsd", data.limitUsd);
+  const modelScope = normalizeCachedModelScope(data.modelScope);
+  if (modelScope) result.modelScope = modelScope;
+  return result;
+}
+
+/**
+ * The window's vendor model scope, or nothing. A snapshot written before scopes
+ * were carried simply has none, and a stale reading then attributes no model
+ * window rather than guessing the scope back out of the window id.
+ */
+function normalizeCachedModelScope(raw: unknown): ModelWindowScope | undefined {
+  const data = objectValue(raw);
+  const id = stringValue(data?.id);
+  if (!data || !id) return undefined;
+  const result: ModelWindowScope = { id };
+  assignString(result, "modelId", data.modelId);
+  assignString(result, "name", data.name);
+  const period = literalValue(data.period, MODEL_WINDOW_PERIODS);
+  if (period) result.period = period;
+  assignNumber(result, "occurrence", data.occurrence);
   return result;
 }
 

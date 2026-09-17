@@ -590,6 +590,9 @@ function demotedWindow(window: QuotaWindow): QuotaWindow {
     percentUsed: undefined,
     startsAt: undefined,
     windowSeconds: undefined,
+    // Attribution input: the scopes it produced are already published as
+    // `effectiveAvailability[].scope` and `models[].quotaScopes`.
+    modelScope: undefined,
     ...(window.pace
       ? {
           pace: {

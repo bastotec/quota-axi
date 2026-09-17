@@ -152,6 +152,66 @@ describe("quota cache", () => {
     ]);
   });
 
+  it("round-trips a model window's vendor scope and tolerates one without", () => {
+    useTempCache();
+    const claude = quota("claude", 30);
+    claude.windows = [
+      {
+        id: "seven_day_opus",
+        label: "opus week",
+        kind: "model",
+        percentUsed: 30,
+        modelScope: { id: "seven_day_opus", name: "Opus", period: "weekly" },
+      },
+      // A window from a snapshot written before scopes were carried.
+      { id: "model:legacy", label: "Legacy", kind: "model", percentUsed: 10 },
+    ];
+    writeCachedProviders([claude]);
+
+    expect(readCachedProvider("claude")?.windows).toMatchObject([
+      {
+        id: "seven_day_opus",
+        modelScope: { id: "seven_day_opus", name: "Opus", period: "weekly" },
+      },
+      { id: "model:legacy" },
+    ]);
+    expect(
+      readCachedProvider("claude")?.windows[1]?.modelScope,
+    ).toBeUndefined();
+  });
+
+  it("drops a cached model scope that carries no identity", () => {
+    useTempCache();
+    const file = cacheFilePath();
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(
+      file,
+      JSON.stringify({
+        generatedAt: "2026-07-06T18:10:00Z",
+        schemaVersion: 1,
+        providers: [
+          {
+            provider: "codex",
+            label: "Codex",
+            source: "oauth",
+            windows: [
+              {
+                id: "five_hour",
+                label: "session",
+                kind: "session",
+                percentUsed: 10,
+                modelScope: { name: "Opus" },
+              },
+            ],
+            state: { status: "fresh", stale: false, sourcesTried: ["oauth"] },
+          },
+        ],
+      }),
+    );
+
+    expect(readCachedProvider("codex")?.windows[0]?.modelScope).toBeUndefined();
+  });
+
   it("merges fresh provider snapshots into existing cache", () => {
     useTempCache();
     writeCachedProviders([quota("claude", 10), quota("codex", 20)]);

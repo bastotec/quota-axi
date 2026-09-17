@@ -321,6 +321,86 @@ describe("Claude live model catalog", () => {
     },
   );
 
+  /**
+   * Regression: the lineup read resolved the credential independently of the
+   * quota read, so `models` read the macOS Keychain value twice in one command
+   * - prompting again unless the user chose "Always Allow" - and the two reads
+   * could answer from different accounts.
+   */
+  it("resolves the credential once across a run's quota and lineup reads", async () => {
+    usePlatform("darwin");
+    useTempHome();
+    const execFileText = vi.fn(async () =>
+      JSON.stringify({ claudeAiOauth: { accessToken: "keychain-token" } }),
+    );
+    vi.doMock("../../src/lib/process.js", () => ({ execFileText }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: unknown) =>
+        String(url).includes("/v1/models")
+          ? jsonResponse({
+              data: [{ id: "claude-opus-5", display_name: "Claude Opus 5" }],
+            })
+          : jsonResponse({
+              five_hour: { utilization: 10, resets_at: "2035-01-01T00:00:00Z" },
+            }),
+      ),
+    );
+
+    const { createProviderCredentialCache } =
+      await import("../../src/providers/credential-cache.js");
+    const { fetchModelCatalog, fetchQuota } =
+      await import("../../src/providers/claude.js");
+    const options = {
+      allowKeychainPrompt: true,
+      refreshCredentials: false,
+      credentialCache: createProviderCredentialCache(),
+    };
+
+    const quota = await fetchQuota(options);
+    const catalog = await fetchModelCatalog(options);
+
+    expect(quota.state.status).toBe("fresh");
+    expect(catalog).toMatchObject({ status: "live" });
+    const valueReads = execFileText.mock.calls.filter((call) =>
+      (call[1] as string[]).includes("-w"),
+    );
+    expect(valueReads).toHaveLength(1);
+  });
+
+  it("reads the store again for each read when no cache is shared", async () => {
+    usePlatform("darwin");
+    useTempHome();
+    const execFileText = vi.fn(async () =>
+      JSON.stringify({ claudeAiOauth: { accessToken: "keychain-token" } }),
+    );
+    vi.doMock("../../src/lib/process.js", () => ({ execFileText }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: unknown) =>
+        String(url).includes("/v1/models")
+          ? jsonResponse({
+              data: [{ id: "claude-opus-5", display_name: "Claude Opus 5" }],
+            })
+          : jsonResponse({
+              five_hour: { utilization: 10, resets_at: "2035-01-01T00:00:00Z" },
+            }),
+      ),
+    );
+
+    const { fetchModelCatalog, fetchQuota } =
+      await import("../../src/providers/claude.js");
+    const options = { allowKeychainPrompt: true, refreshCredentials: false };
+
+    await fetchQuota(options);
+    await fetchModelCatalog(options);
+
+    const valueReads = execFileText.mock.calls.filter((call) =>
+      (call[1] as string[]).includes("-w"),
+    );
+    expect(valueReads).toHaveLength(2);
+  });
+
   it("falls through to a sibling credential source after a rejection", async () => {
     usePlatform("darwin");
     useTempHome();
