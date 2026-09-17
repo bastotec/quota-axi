@@ -203,5 +203,34 @@ describe("credential source contract", { timeout: 30_000 }, () => {
       const token = testCase.liveEntry.access as string;
       expect(api.bearers).toContain(`Bearer ${token}`);
     });
+
+    it("never claims no local credential for one the endpoint refused", async () => {
+      // The safety half of the rule, and the one every provider owes: the
+      // claim is about quota-axi's reach, so a credential that was found and
+      // refused can never carry it whatever else the adapter reports.
+      writePiStore({ [testCase.piKey]: testCase.liveEntry });
+      stubRejectingApi();
+
+      const result = await readQuota(testCase.provider);
+
+      expect(result.state.reason).not.toBe("no_local_credential");
+    });
+  });
+
+  /**
+   * Routed through `noLocalCredentialReason` so far. The remaining adapters
+   * still report their empty-handed reads as a sign-out; they owe this reason
+   * too, and the invariant above already stops any of them claiming it wrongly.
+   */
+  describe.each(["codex", "zai"])("%s with no store to read", (provider) => {
+    it("reports that no credential was found, not that the account signed out", async () => {
+      stubRejectingApi();
+
+      const result = await readQuota(provider);
+
+      expect(result.state.status).toBe("auth_required");
+      expect(result.state.reason).toBe("no_local_credential");
+      expect(result.state.error ?? "").not.toMatch(/sign-in|signed out/i);
+    });
   });
 });

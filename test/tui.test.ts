@@ -83,6 +83,25 @@ describe("renderQuotaTui structure", () => {
     );
   });
 
+  it("does not count a provider whose credential it never found as signed out", () => {
+    const response = fixtureResponse();
+    const unread = response.providers.find(
+      (provider) => provider.provider === "cursor",
+    )!;
+    unread.state = { ...unread.state, reason: "no_local_credential" };
+    const lines = renderQuotaTui(response, {
+      timeZone: "America/Los_Angeles",
+    }).split("\n");
+
+    expect(lines[0]).toBe(
+      "  quota-axi · 2026-08-06 16:21 PDT · 3 live · 2 signed out · 1 no credential",
+    );
+    const title = findLine(lines, "○ cursor");
+    expect(title).toContain("no credential");
+    expect(title).not.toContain("signed out");
+    expect(findCardLine(lines, 1, "no credential in the stores")).toBeDefined();
+  });
+
   it("zips live provider cards two-up with live providers first", () => {
     const lines = render();
     const title = findLine(lines, "● claude");

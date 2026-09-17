@@ -17,10 +17,12 @@ import type {
   ProviderAdapter,
   ProviderOptions,
   ProviderQuota,
+  ProviderStateReason,
   ProviderStatus,
   QuotaWindow,
   SourceAttempt,
 } from "../types.js";
+import { noLocalCredentialReason } from "./common.js";
 import { VERSION } from "../version.js";
 
 const ZAI_QUOTA_PATH = "/api/monitor/usage/quota/limit";
@@ -57,7 +59,12 @@ export type NormalizedZaiPayload = {
 
 export type ZaiCredentialResolution =
   | { status: "available"; apiKey: string; host: string; path: string }
-  | { status: "missing"; path: string }
+  /**
+   * No key this adapter can send. `credentialPresent` separates a store that
+   * held a Z.AI entry quota-axi could not use from one that held none at all:
+   * only the latter means quota-axi found no credential to test.
+   */
+  | { status: "missing"; path: string; credentialPresent?: boolean }
   | { status: "invalid"; path: string; error: string }
   | { status: "error"; path: string; error: string };
 
@@ -86,6 +93,7 @@ type ZaiFailureOptions = {
   staleEligible?: boolean;
   definitiveAuth?: boolean;
   retryAfter?: string;
+  reason?: ProviderStateReason;
 };
 
 type ResponseBodyLifetime = {
@@ -109,14 +117,20 @@ export function extractZaiCredential(
 ): ZaiCredentialResolution {
   const data = objectValue(value);
   if (!data) return { status: "invalid", path, error: "json_parse_error" };
+  let credentialPresent = false;
   for (const providerId of [...ZAI_PROVIDER_IDS, ...ZHIPU_PROVIDER_IDS]) {
     const entry = data[providerId];
     if (entry === undefined || entry === null) continue;
+    // The store named this provider, so a credential is here even when its
+    // value is not one this adapter can send.
+    credentialPresent = true;
     const host = ZAI_PROVIDER_IDS.includes(providerId) ? ZAI_HOST : ZHIPU_HOST;
     const key = extractKey(entry);
     if (key) return { status: "available", apiKey: key, host, path };
   }
-  return { status: "missing", path };
+  return credentialPresent
+    ? { status: "missing", path, credentialPresent }
+    : { status: "missing", path };
 }
 
 export function createOpencodeAuthCredentialSource(
@@ -272,9 +286,15 @@ function credentialFailureFor(
   resolution: Exclude<ZaiCredentialResolution, { status: "available" }>,
 ): ZaiFailure {
   if (resolution.status === "missing") {
+    // No opencode store held a Z.AI key. The read still needs one, but nothing
+    // here says the account is signed out - see `noLocalCredentialReason`.
     return new ZaiFailure("zai_credential_unavailable", {
       status: "auth_required",
       definitiveAuth: true,
+      reason: noLocalCredentialReason(
+        "auth_required",
+        resolution.credentialPresent === true,
+      ),
     });
   }
   if (resolution.status === "error") {
@@ -329,6 +349,7 @@ function failureReport(
       stale: false,
       error: failure.code,
       ...(failure.retryAfter ? { retryAfter: failure.retryAfter } : {}),
+      ...(failure.reason ? { reason: failure.reason } : {}),
       sourcesTried: attempts.map(({ source }) => source),
     },
     attempts,
@@ -869,6 +890,7 @@ class ZaiFailure extends Error {
   readonly staleEligible: boolean;
   readonly definitiveAuth: boolean;
   readonly retryAfter?: string;
+  readonly reason?: ProviderStateReason;
 
   constructor(code: string, options: ZaiFailureOptions = {}) {
     super(code);
@@ -877,5 +899,6 @@ class ZaiFailure extends Error {
     this.staleEligible = options.staleEligible ?? false;
     this.definitiveAuth = options.definitiveAuth ?? false;
     this.retryAfter = options.retryAfter;
+    this.reason = options.reason;
   }
 }

@@ -1,6 +1,7 @@
 import type {
   ProviderQuota,
   ProviderSource,
+  ProviderStateReason,
   ProviderStatus,
   QuotaWindow,
   SourceAttempt,
@@ -42,6 +43,7 @@ export function failedProvider(args: {
   sourcesTried: string[];
   source?: ProviderSource;
   retryAfter?: string;
+  reason?: ProviderStateReason;
   attempts?: SourceAttempt[];
 }): ProviderQuota {
   return {
@@ -54,10 +56,31 @@ export function failedProvider(args: {
       stale: false,
       error: args.error,
       retryAfter: args.retryAfter,
+      ...(args.reason ? { reason: args.reason } : {}),
       sourcesTried: args.sourcesTried,
     },
     attempts: args.attempts,
   };
+}
+
+/**
+ * The one spelling of "quota-axi never obtained a credential to test".
+ *
+ * `auth_required` is a statement about where quota-axi looked, not about
+ * whether the provider has a source: reporting it as a sign-out asserts
+ * something about the account that no evidence in the run supports. Only a
+ * credential a first-party endpoint refused earns that claim, so an adapter
+ * passes `credentialTested: false` whenever every source it reads came up
+ * empty, and the typed reason - never a reworded error string - carries the
+ * distinction to the report.
+ */
+export function noLocalCredentialReason(
+  status: ProviderStatus,
+  credentialTested: boolean,
+): ProviderStateReason | undefined {
+  return status === "auth_required" && !credentialTested
+    ? "no_local_credential"
+    : undefined;
 }
 
 export function staleFromCache(

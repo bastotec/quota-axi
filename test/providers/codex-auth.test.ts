@@ -490,7 +490,9 @@ describe("Codex credential-state reporting", () => {
       refreshCredentials: false,
     });
 
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    // One native endpoint, then Pi: the removed `codex/usage` candidate used
+    // to add a third call that could only ever return a WAF challenge.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(result.source).toBe("pi:openai-codex");
     expect(result.attempts).toEqual([
       { source: "oauth", status: "failed", error: "Codex sign-in required" },
@@ -619,19 +621,19 @@ describe("Codex credential-state reporting", () => {
   it.each([
     {
       failure: "a network error",
-      secondEndpoint: async () => {
+      endpoint: async () => {
         throw new TypeError("network unavailable");
       },
       expectedError: "network unavailable",
     },
     {
       failure: "a server error",
-      secondEndpoint: async () => new Response(null, { status: 500 }),
+      endpoint: async () => new Response(null, { status: 500 }),
       expectedError: "Codex quota unavailable",
     },
     {
       failure: "an incompatible payload",
-      secondEndpoint: async () =>
+      endpoint: async () =>
         new Response(JSON.stringify({ unrelated: true }), {
           status: 200,
           headers: { "content-type": "application/json" },
@@ -639,8 +641,8 @@ describe("Codex credential-state reporting", () => {
       expectedError: "Codex quota unavailable",
     },
   ])(
-    "does not switch sources when one native endpoint rejects and the other has $failure",
-    async ({ secondEndpoint, expectedError }) => {
+    "does not switch sources when the native endpoint has $failure",
+    async ({ endpoint, expectedError }) => {
       const nativeToken = jwt({ exp: Math.floor(Date.now() / 1000) + 3600 });
       const piToken = "working-pi-token";
       writeAuth({ tokens: { access_token: nativeToken } });
@@ -648,14 +650,11 @@ describe("Codex credential-state reporting", () => {
       const bearers: string[] = [];
       vi.stubGlobal(
         "fetch",
-        vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
           const authorization =
             (init?.headers as Record<string, string>)?.authorization ?? "";
           bearers.push(authorization);
-          if (String(url).endsWith("/wham/usage")) {
-            return new Response(null, { status: 401 });
-          }
-          return secondEndpoint();
+          return endpoint();
         }),
       );
 
@@ -671,10 +670,7 @@ describe("Codex credential-state reporting", () => {
       expect(result.attempts).toEqual([
         { source: "oauth", status: "failed", error: expectedError },
       ]);
-      expect(bearers).toEqual([
-        `Bearer ${nativeToken}`,
-        `Bearer ${nativeToken}`,
-      ]);
+      expect(bearers).toEqual([`Bearer ${nativeToken}`]);
       expect(bearers).not.toContain(`Bearer ${piToken}`);
     },
   );
@@ -712,7 +708,7 @@ describe("Codex credential-state reporting", () => {
     expect(result.attempts).toEqual([
       { source: "oauth", status: "failed", error: "network unavailable" },
     ]);
-    expect(bearers).toEqual([`Bearer ${nativeToken}`, `Bearer ${nativeToken}`]);
+    expect(bearers).toEqual([`Bearer ${nativeToken}`]);
     expect(bearers).not.toContain(`Bearer ${piToken}`);
     expect(interpreted.state.degradedSources).toBeUndefined();
   });
@@ -1038,6 +1034,97 @@ describe("Codex credential-state reporting", () => {
     expect(rendered).not.toContain(accessToken);
     expect(rendered).not.toContain(refreshToken);
     expect(rendered).toContain("[redacted]");
+  });
+
+  it("reports no local credential, not a sign-out, when no store holds one", async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 401 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { fetchQuota } = await import("../../src/providers/codex.js");
+    const result = await fetchQuota({
+      allowKeychainPrompt: false,
+      refreshCredentials: false,
+    });
+
+    // Nothing was read, so nothing was asked: the run holds no evidence about
+    // the account and must not report one.
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.state.status).toBe("auth_required");
+    expect(result.state.reason).toBe("no_local_credential");
+    expect(result.state.error).not.toMatch(/sign-in/i);
+  });
+
+  it("reports a sign-out only for a credential the endpoint refused", async () => {
+    const nativeToken = jwt({ exp: Math.floor(Date.now() / 1000) + 3600 });
+    writeAuth({ tokens: { access_token: nativeToken } });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(null, { status: 401 })),
+    );
+
+    const { fetchQuota } = await import("../../src/providers/codex.js");
+    const result = await fetchQuota({
+      allowKeychainPrompt: false,
+      refreshCredentials: false,
+    });
+
+    expect(result.state.status).toBe("auth_required");
+    expect(result.state.error).toBe("Codex sign-in required");
+    expect(result.state.reason).toBeUndefined();
+  });
+
+  it("does not claim no local credential when a store holds an unusable one", async () => {
+    writeAuth({ tokens: { access_token: 42 } });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(null, { status: 401 })),
+    );
+
+    const { fetchQuota } = await import("../../src/providers/codex.js");
+    const result = await fetchQuota({
+      allowKeychainPrompt: false,
+      refreshCredentials: false,
+    });
+
+    expect(result.state.status).toBe("auth_required");
+    expect(result.state.reason).toBeUndefined();
+  });
+
+  it("does not claim no local credential when a Pi credential was refused", async () => {
+    writePiAuth(piOauthEntry());
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(null, { status: 401 })),
+    );
+
+    const { fetchQuota } = await import("../../src/providers/codex.js");
+    const result = await fetchQuota({
+      allowKeychainPrompt: false,
+      refreshCredentials: false,
+    });
+
+    expect(result.state.status).toBe("auth_required");
+    expect(result.state.reason).toBeUndefined();
+  });
+
+  it("asks only the endpoint that answers", async () => {
+    const nativeToken = jwt({ exp: Math.floor(Date.now() / 1000) + 3600 });
+    writeAuth({ tokens: { access_token: nativeToken } });
+    const urls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request) => {
+        urls.push(String(url));
+        return new Response(null, { status: 401 });
+      }),
+    );
+
+    const { fetchQuota } = await import("../../src/providers/codex.js");
+    await fetchQuota({ allowKeychainPrompt: false, refreshCredentials: false });
+
+    // `backend-api/codex/usage` answers a Cloudflare challenge to any caller,
+    // credential or not, so a failure must never pay a round-trip to it.
+    expect(urls).toEqual(["https://chatgpt.com/backend-api/wham/usage"]);
   });
 });
 

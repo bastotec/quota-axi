@@ -22,6 +22,7 @@ import type {
 } from "../types.js";
 import {
   failedProvider,
+  noLocalCredentialReason,
   sourceNames,
   staleFromCache,
   statusFromError,
@@ -41,10 +42,18 @@ import {
   type PiCodexCredentialResolution,
 } from "./pi-codex-credential.js";
 
-const ENDPOINTS = [
-  "https://chatgpt.com/backend-api/wham/usage",
-  "https://chatgpt.com/backend-api/codex/usage",
-];
+/**
+ * `backend-api/codex/usage` used to sit here as a second candidate and is
+ * deliberately gone. It never answered: it returns a Cloudflare bot-management
+ * interstitial (403, `cf-mitigated: challenge`, HTML) identically for a valid
+ * bearer, a different account's bearer, and no credential at all, so the
+ * credential is never examined and no reading can come back. Restoring it
+ * would cost every Codex failure a round-trip that can only ever yield that
+ * challenge - and worse, this loop reads 403 as a rejection, so the one thing
+ * the dead entry can contribute is a WAF challenge dressed as the user's
+ * sign-in verdict.
+ */
+const ENDPOINTS = ["https://chatgpt.com/backend-api/wham/usage"];
 const API_TIMEOUT_MS = 15_000;
 const CLI_TIMEOUT_MS = 15_000;
 const RPC_TIMEOUT_MS = 8_000;
@@ -150,6 +159,10 @@ async function fetchQuotaWithDependencies(
   // run, and letting an expired Pi entry restate it as an auth problem would
   // make statusFromError advise a sign-in for what is a network outage.
   let errorIsDefault = true;
+  // True once any store quota-axi reads held a credential, usable or not.
+  // While it stays false the run has established nothing about the account:
+  // see `noLocalCredentialReason`.
+  let credentialFound = false;
 
   const credentialState = readCredentialState();
   const oauthCandidates: CredentialCandidate<CodexAttemptCredential>[] = [];
@@ -157,6 +170,7 @@ async function fetchQuotaWithDependencies(
     credentialState.status === "available" ||
     credentialState.status === "expired"
   ) {
+    credentialFound = true;
     oauthCandidates.push({
       source: "oauth",
       localState: credentialState.status === "available" ? "valid" : "expired",
@@ -173,7 +187,15 @@ async function fetchQuotaWithDependencies(
         ? {}
         : { credentialPresent: true }),
     });
-    finalError = "Codex sign-in required";
+    if (credentialState.status === "missing") {
+      // No store to read is not a sign-out. It stays `auth_required` because a
+      // credential is still what this read needs, but it must not claim the
+      // account is signed out on evidence the run never gathered.
+      finalError = "Codex credential required";
+    } else {
+      credentialFound = true;
+      finalError = "Codex sign-in required";
+    }
     errorIsDefault = false;
   }
 
@@ -207,6 +229,7 @@ async function fetchQuotaWithDependencies(
   }
   const piCandidates: CredentialCandidate<CodexAttemptCredential>[] = [];
   if (piResolution.status === "available") {
+    credentialFound = true;
     piCandidates.push({
       source: PI_CODEX_CREDENTIAL_SOURCE,
       localState: "valid",
@@ -219,6 +242,7 @@ async function fetchQuotaWithDependencies(
     piResolution.status === "expired" &&
     piResolution.credentials !== undefined
   ) {
+    credentialFound = true;
     piCandidates.push({
       source: PI_CODEX_CREDENTIAL_SOURCE,
       localState: "expired",
@@ -229,7 +253,9 @@ async function fetchQuotaWithDependencies(
       },
     });
   } else {
-    attempts.push(piSourceAttempt(piResolution));
+    const piAttempt = piSourceAttempt(piResolution);
+    if (piAttempt.credentialPresent) credentialFound = true;
+    attempts.push(piAttempt);
     if (
       piResolution.status === "error" &&
       (errorIsDefault || statusFromError(finalError) === "auth_required")
@@ -302,7 +328,13 @@ async function fetchQuotaWithDependencies(
     }
   }
 
-  return codexFailureReport(finalError, undefined, attempts);
+  return codexFailureReport(
+    finalError,
+    undefined,
+    attempts,
+    undefined,
+    credentialFound,
+  );
 }
 
 /**
@@ -380,23 +412,31 @@ function codexSuccessReport(
   });
 }
 
+/**
+ * `credentialFound` defaults to true so a caller that does not track it can
+ * never publish the `no_local_credential` claim by omission: the claim is only
+ * made where the run actually established that no store held a credential.
+ */
 function codexFailureReport(
   error: string,
   retryAfter: string | undefined,
   attempts: SourceAttempt[],
   source?: ProviderQuota["source"],
+  credentialFound = true,
 ): ProviderQuota {
   const cached = readCachedProvider("codex");
   if (cached) {
     return staleFromCache(cached, error, sourceNames(attempts), attempts);
   }
+  const status = retryAfter ? "rate_limited" : statusFromError(error);
   return failedProvider({
     provider: "codex",
     label: "Codex",
     ...(source ? { source } : {}),
-    status: retryAfter ? "rate_limited" : statusFromError(error),
+    status,
     error,
     retryAfter,
+    reason: noLocalCredentialReason(status, credentialFound),
     sourcesTried: sourceNames(attempts),
     attempts,
   });
