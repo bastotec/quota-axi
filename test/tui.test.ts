@@ -113,17 +113,19 @@ describe("renderQuotaTui structure", () => {
     }).split("\n");
 
     expect(lines[0]).toBe(
-      "  quota-axi · 2026-08-06 16:21 PDT · 3 live · 2 signed out · 1 credential unusable",
+      "  quota-axi · 2026-08-06 16:21 PDT · 3 live · 2 signed out · 1 no usable credential",
     );
     const title = findLine(lines, "○ cursor");
-    expect(title).toContain("credential unusable");
+    expect(title).toContain("no usable credential");
     expect(title).not.toContain("signed out");
-    // The remedy is repairing the store, never a new sign-in: re-authenticating
-    // cannot fix a credential no endpoint has refused.
-    expect(
-      findCardLine(lines, 1, "stored credential unusable; fix the store"),
-    ).toBeDefined();
-    const card = findCardLine(lines, 1, "stored credential unusable")!;
+    // The card states what the store yielded and claims no sign-out remedy:
+    // no endpoint refused anything, so re-authenticating is not the verdict.
+    const card = findCardLine(
+      lines,
+      1,
+      "local store yielded no usable credential",
+    );
+    expect(card).toBeDefined();
     expect(card).not.toMatch(/sign|auth/i);
   });
 

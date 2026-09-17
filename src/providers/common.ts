@@ -66,9 +66,10 @@ export function failedProvider(args: {
 /**
  * What the run established about a local credential, weakest evidence first.
  *
- * `none`: no store quota-axi reads held a credential at all.
- * `unusable`: a store held one this adapter could not send - a malformed
- * `auth.json`, a key that fails the secret guard - so no endpoint saw it.
+ * `none`: no store quota-axi reads held anything for this provider at all.
+ * `unusable`: a store was read and yielded nothing this adapter can send - a
+ * malformed `auth.json`, a file holding no login, a key that fails the secret
+ * guard - so no endpoint saw a credential.
  * `tested`: a credential was sent to a first-party endpoint, which answered.
  */
 export type LocalCredentialEvidence = "none" | "unusable" | "tested";

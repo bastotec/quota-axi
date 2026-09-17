@@ -198,7 +198,7 @@ function headerText(response: QuotaAxiResponse, timeZone?: string): string {
     `${signedOut} signed out`,
   ];
   if (unread > 0) parts.push(`${unread} no credential`);
-  if (unusable > 0) parts.push(`${unusable} credential unusable`);
+  if (unusable > 0) parts.push(`${unusable} no usable credential`);
   if (failed > 0) parts.push(`${failed} unavailable`);
   return parts.filter(Boolean).join(" · ");
 }
@@ -372,9 +372,9 @@ function windowsOnlyHeadline(stale: boolean | undefined): Line[] {
 function buildFailedCard(provider: ProviderQuota): Card {
   const status = provider.state.status;
   // "signed out" is a claim about the account, and quota-axi has only earned it
-  // when a credential it read was refused. With no credential to read, or one
-  // it could not send, it has established nothing about the account, so the
-  // card says what is true: what it found where it looks.
+  // when a credential it read was refused. With nothing to read, or nothing
+  // sendable in what it read, it has established nothing about the account, so
+  // the card says what is true: what its own stores yielded.
   const noCredential = provider.state.reason === "no_local_credential";
   const unusableCredential =
     provider.state.reason === "local_credential_unusable";
@@ -383,7 +383,7 @@ function buildFailedCard(provider: ProviderQuota): Card {
       ? noCredential
         ? "no credential"
         : unusableCredential
-          ? "credential unusable"
+          ? "no usable credential"
           : "signed out"
       : humanize(status);
   const lines: Line[] = [
@@ -397,7 +397,7 @@ function buildFailedCard(provider: ProviderQuota): Card {
   const message = noCredential
     ? "no credential in the stores quota-axi reads"
     : unusableCredential
-      ? "stored credential unusable; fix the store"
+      ? "local store yielded no usable credential"
       : humanize(provider.state.error ?? "") ||
         (status === "auth_required" ? "sign-in required" : humanize(status));
   const body: { text: string; style: StyleName }[] = [
