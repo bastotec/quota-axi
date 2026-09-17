@@ -239,45 +239,52 @@ describe("credential source contract", { timeout: 30_000 }, () => {
    * could be shown. That is a stored-credential problem to fix, and it is
    * neither of the other two - not "quota-axi found none" and not a sign-out.
    */
-  const UNUSABLE_STORES: Array<[provider: string, write: () => void]> = [
+  const writeCodexAuth = (body: string) =>
+    writeFileSync(join(process.env.CODEX_HOME!, "auth.json"), body, {
+      mode: 0o600,
+    });
+  const writeOpencodeAuth = (body: string) => {
+    const dir = join(process.env.XDG_DATA_HOME!, "opencode");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "auth.json"), body, { mode: 0o600 });
+  };
+
+  const UNUSABLE_STORES: Array<
+    [label: string, provider: string, write: () => void]
+  > = [
     [
+      "codex entry it cannot send",
       "codex",
+      () => writeCodexAuth(JSON.stringify({ tokens: { access_token: 42 } })),
+    ],
+    [
+      "codex store it cannot parse",
+      "codex",
+      () => writeCodexAuth("{ not json"),
+    ],
+    [
+      "zai entry it cannot send",
+      "zai",
       () =>
-        writeFileSync(
-          join(process.env.CODEX_HOME!, "auth.json"),
-          JSON.stringify({ tokens: { access_token: 42 } }),
-          { mode: 0o600 },
+        writeOpencodeAuth(
+          JSON.stringify({ "zai-coding-plan": { type: "api", key: "   " } }),
         ),
     ],
-    [
-      "zai",
-      () => {
-        const dir = join(process.env.XDG_DATA_HOME!, "opencode");
-        mkdirSync(dir, { recursive: true });
-        writeFileSync(
-          join(dir, "auth.json"),
-          JSON.stringify({ "zai-coding-plan": { type: "api", key: "   " } }),
-          { mode: 0o600 },
-        );
-      },
-    ],
+    ["zai store it cannot parse", "zai", () => writeOpencodeAuth("{ not json")],
   ];
 
-  describe.each(UNUSABLE_STORES)(
-    "%s with a store holding an unusable credential",
-    (provider, write) => {
-      it("reports the stored credential as unusable, not as absence or a sign-out", async () => {
-        write();
-        const api = stubRejectingApi();
+  describe.each(UNUSABLE_STORES)("%s", (_label, provider, write) => {
+    it("reports the stored credential as unusable, not as absence or a sign-out", async () => {
+      write();
+      const api = stubRejectingApi();
 
-        const result = await readQuota(provider);
+      const result = await readQuota(provider);
 
-        // Nothing sendable was found, so no endpoint was asked and no verdict
-        // about the account exists to report.
-        expect(api.bearers).toEqual([]);
-        expect(result.state.status).toBe("auth_required");
-        expect(result.state.reason).toBe("local_credential_unusable");
-      });
-    },
-  );
+      // Nothing sendable was found, so no endpoint was asked and no verdict
+      // about the account exists to report.
+      expect(api.bearers).toEqual([]);
+      expect(result.state.status).toBe("auth_required");
+      expect(result.state.reason).toBe("local_credential_unusable");
+    });
+  });
 });

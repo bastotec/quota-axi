@@ -219,11 +219,10 @@ async function acquireZaiQuota(
         source: OPENCODE_AUTH_SOURCE,
         status: resolution.status === "missing" ? "skipped" : "failed",
         error: failure.code,
-        // A store that named Z.AI is not genuinely absent, even when the key
-        // it held is not one this adapter can send.
-        ...(resolution.status === "missing" && resolution.credentialPresent
-          ? { credentialPresent: true }
-          : {}),
+        // A store that named Z.AI, or one whose bytes could not be walked to
+        // its entries at all, is not genuinely absent: neither is a credential
+        // this adapter could send, and neither is proof there is none.
+        ...(credentialHeldBy(resolution) ? { credentialPresent: true } : {}),
       };
       return failureReport(failure, attempts, dependencies);
     }
@@ -287,6 +286,19 @@ async function acquireZaiQuota(
   }
 }
 
+/**
+ * Whether the store this resolution read holds a credential quota-axi simply
+ * could not use. A store that named Z.AI qualifies, and so does one whose own
+ * bytes are malformed: nothing about it says the account has no credential.
+ */
+function credentialHeldBy(
+  resolution: Exclude<ZaiCredentialResolution, { status: "available" }>,
+): boolean {
+  if (resolution.status === "missing")
+    return resolution.credentialPresent === true;
+  return resolution.status === "invalid";
+}
+
 function credentialFailureFor(
   resolution: Exclude<ZaiCredentialResolution, { status: "available" }>,
 ): ZaiFailure {
@@ -295,7 +307,7 @@ function credentialFailureFor(
     // says the account is signed out - see `localCredentialReason`. Retiring
     // the cached snapshot is an auth verdict too: finding no credential is the
     // absence of evidence, so only a store that held one may retire it.
-    const credentialPresent = resolution.credentialPresent === true;
+    const credentialPresent = credentialHeldBy(resolution);
     return new ZaiFailure("zai_credential_unavailable", {
       status: "auth_required",
       definitiveAuth: credentialPresent,
@@ -313,6 +325,7 @@ function credentialFailureFor(
   return new ZaiFailure("zai_credential_invalid", {
     status: "auth_required",
     definitiveAuth: true,
+    reason: localCredentialReason("auth_required", "unusable"),
   });
 }
 

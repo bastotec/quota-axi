@@ -199,7 +199,7 @@ async function fetchQuotaWithDependencies(
       // endpoint examined it: that is a stored-credential problem, not a
       // sign-out.
       evidence = strongerEvidence(evidence, "unusable");
-      finalError = "Codex stored credential unusable, sign-in required";
+      finalError = "Codex stored credential unusable, credential required";
     }
     errorIsDefault = false;
   }

@@ -840,7 +840,7 @@ describe("Z.AI credential discovery", () => {
     }
   });
 
-  it("does not claim no local credential when the store could not be parsed", async () => {
+  it("reports an unparseable store as an unusable credential, not a sign-out", async () => {
     const report = await testAdapter({
       credentialSource: credentialSource({
         status: "invalid",
@@ -852,7 +852,14 @@ describe("Z.AI credential discovery", () => {
     }).fetchQuota(OPTIONS);
 
     expect(report.state.status).toBe("auth_required");
-    expect(report.state.reason).toBeUndefined();
+    expect(report.state.reason).toBe("local_credential_unusable");
+    expect(report.attempts).toContainEqual(
+      expect.objectContaining({
+        source: "opencode:auth.json",
+        status: "failed",
+        credentialPresent: true,
+      }),
+    );
   });
 
   it("does not claim no local credential when the endpoint refused the key", async () => {
