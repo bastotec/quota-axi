@@ -154,8 +154,8 @@ export async function modelsCommand(
     allowKeychainPrompt: flags.allowKeychainPrompt,
     refreshCredentials: !flags.noCredentialRefresh,
     // `models` is the one command that reads a provider's store twice, so the
-    // two reads share one resolution: one macOS Keychain value read, and one
-    // account answering both halves.
+    // two reads share one resolution: absent an invalidation, one macOS
+    // Keychain value read, and one account answering both halves.
     credentialCache: createProviderCredentialCache(),
   };
   // Sequenced, not parallel: the quota read owns credential refresh and the

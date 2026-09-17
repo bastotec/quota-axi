@@ -370,11 +370,14 @@ describe("Claude live model catalog", () => {
 
   /**
    * Regression: the shared resolution was invalidated only by the refresh
-   * delegate, so after Anthropic definitively rejected a bearer the lineup read
-   * re-presented the very credential the quota read had just seen rejected,
-   * even though the store on disk no longer held it.
+   * delegate, so a store rotated by its owner after quota-axi's quota read was
+   * rejected went unseen - the lineup read reused the superseded resolution
+   * instead of the credential the store then held. This covers that rotation
+   * only. It is not evidence that a rejected credential is withheld from the
+   * lineup read: nothing remembers a rejection, so an unchanged store resolves
+   * the same credential again.
    */
-  it("re-resolves the store after a definitive rejection", async () => {
+  it("re-reads a store rotated externally after its credential was rejected", async () => {
     useTempHome();
     writeCredentials("rejected-token");
     const fetchMock = vi.fn(async (_url: unknown, init: RequestInit) =>

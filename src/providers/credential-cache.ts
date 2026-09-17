@@ -14,9 +14,11 @@ import type { ProviderCredentialCache } from "../types.js";
  * A cache belongs to one `ProviderOptions`, and therefore to one command
  * invocation: it holds only what that run already had in memory, is never
  * written anywhere, and is dropped when the run ends. A provider invalidates
- * its entry once that resolution stops describing a usable session - its store
- * was rewritten by a rotation, or the credential it carried was definitively
- * rejected - so the next read resolves the store again rather than reusing it.
+ * its entry when the store behind it may have been rewritten - by a rotation it
+ * delegated, or externally after a definitive rejection - so the next read
+ * resolves the store again rather than reusing a stale resolution. Invalidation
+ * says nothing about the credential itself: an unchanged store resolves the
+ * same one again.
  */
 export function createProviderCredentialCache(): ProviderCredentialCache {
   const entries = new Map<string, Promise<unknown>>();

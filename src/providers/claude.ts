@@ -449,10 +449,11 @@ async function attemptClaudeQuota(
         };
         if (failure.definitiveAuth) {
           definitiveFailure ??= failure;
-          // Anthropic rejected this bearer. The resolution this run shares is
-          // what produced it, so it is dropped rather than left for a later
-          // read in the same command - the vendor's lineup read - to present
-          // the same rejected credential again.
+          // Anthropic rejected this bearer, so the resolution this run shares
+          // is dropped and a later read resolves the store again - picking up
+          // a rotation this command did not perform. Nothing here remembers
+          // the rejected token, so an unchanged store yields it again and the
+          // lineup read presents it a second time.
           options.credentialCache?.invalidate(credentialCacheKey(locations));
           if (state.status === "expired" && state.refreshable) {
             refreshableExpiredRejected = true;
@@ -785,10 +786,12 @@ function slugify(value: string): string {
  * Reading the store is the step that can prompt for the macOS Keychain value
  * and the step that decides which account answers, so a run that reads Claude
  * twice - `models` reads quota and then the vendor's lineup - resolves it once
- * and reuses that resolution. It is invalidated when the store it describes
- * stops describing a usable session: the delegated refresh rewrites the store,
- * and a definitive rejection means the credential it carried must not be
- * presented again by a later read in the same command.
+ * and reuses that resolution. It is invalidated when the store may have been
+ * rewritten - by the delegated refresh, or externally after a definitive
+ * rejection - so the next read sees what the store holds now. Invalidation is
+ * not a guarantee about the credential: no rejected token is remembered, so a
+ * store that did not change resolves the same credential again and a later
+ * read in the same command presents it again.
  */
 async function readCredentialStates(
   options: ProviderOptions,
