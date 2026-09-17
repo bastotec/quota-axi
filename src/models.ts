@@ -1,9 +1,17 @@
+import {
+  intelligenceForLiveModel,
+  liveModelMatchesWindowSlug,
+  modelWindowSlug,
+} from "./model-catalog.js";
 import { MODEL_CATALOG } from "./model-kb.js";
 import type {
   EffectiveAvailability,
   IntelligenceBucket,
+  LiveModelCatalog,
+  LiveModelRecord,
   ModelCatalog,
   ModelCatalogEntry,
+  ModelCatalogSourceReport,
   ModelQuotaRecord,
   ModelReference,
   ModelSortKey,
@@ -12,6 +20,7 @@ import type {
   ProviderQuota,
   ProviderStateSummary,
   QuotaAxiResponse,
+  UnverifiedWindowAttribution,
 } from "./types.js";
 
 const INTELLIGENCE_BUCKETS = new Set<IntelligenceBucket>([
@@ -48,41 +57,94 @@ export const MODEL_COMPARATORS: Readonly<
 
 validateModelCatalog(MODEL_CATALOG);
 
+/**
+ * Join the providers' own live model lineups with local quota evidence.
+ *
+ * Model identity is the vendor's: rows for a provider whose live catalog was
+ * read name only models that provider listed on this run, and a model-scoped
+ * window is attributed by matching the vendor's window slug against the
+ * vendor's model identity. The built-in catalog contributes reviewed
+ * intelligence buckets and nothing else.
+ *
+ * When a provider's live catalog cannot be read, its rows fall back to the
+ * built-in lineup but are marked `unverified_builtin` and `catalogSources` says
+ * why, so no reader can mistake quota-axi's own stale lineup for the vendor's
+ * current one. Any window such a row claims through a built-in `windowIds`
+ * entry is published in `unverifiedAttributions`, because that mapping of one
+ * vendor name onto another is quota-axi's claim and not the vendor's.
+ */
 export function createModelsResponse(
   quota: QuotaAxiResponse,
   options: {
     intelligence?: IntelligenceBucket;
     sort?: ModelSortKey;
     catalog?: ModelCatalog;
+    liveCatalogs?: readonly LiveModelCatalog[];
   } = {},
 ): ModelsResponse {
   const catalog = options.catalog ?? MODEL_CATALOG;
   validateModelCatalog(catalog);
-  const providers = new Map(
-    quota.providers.map((provider) => [provider.provider, provider]),
+  const catalogProviders = new Set(
+    catalog.entries.map((entry) => entry.provider),
   );
-  const models = catalog.entries
-    .filter(
-      (entry) =>
-        providers.has(entry.provider) &&
-        (options.intelligence === undefined ||
-          entry.intelligence === options.intelligence),
-    )
-    .map((entry) => modelRecord(entry, providers.get(entry.provider)!))
-    .sort(compareModelIdentity);
-  const unmatchedWindowIds = quota.providers.flatMap((provider) =>
-    unmatchedModelWindowIds(provider, catalog.entries),
+  const providers = quota.providers.filter((provider) =>
+    catalogProviders.has(provider.provider as ModelCatalogEntry["provider"]),
+  );
+  const liveByProvider = new Map(
+    (options.liveCatalogs ?? []).map((live) => [live.provider, live]),
   );
 
-  if (!options.sort) {
-    return {
-      generatedAt: quota.generatedAt,
-      schemaVersion: 1,
-      catalog: catalogSummary(catalog),
-      models,
-      ...(unmatchedWindowIds.length > 0 ? { unmatchedWindowIds } : {}),
+  const rows: ModelQuotaRecord[] = [];
+  const catalogSources: ModelCatalogSourceReport[] = [];
+  const unmatchedWindowIds: string[] = [];
+  const unverifiedAttributions: UnverifiedWindowAttribution[] = [];
+
+  for (const provider of providers) {
+    const live = liveByProvider.get(provider.provider) ?? {
+      provider: provider.provider,
+      status: "unavailable" as const,
+      reason: "no_live_catalog_source",
     };
+    catalogSources.push(catalogSourceReport(live));
+    const providerEntries = catalog.entries.filter(
+      (entry) => entry.provider === provider.provider,
+    );
+
+    if (live.status === "live") {
+      rows.push(...liveRows(live.models, provider, providerEntries));
+      unmatchedWindowIds.push(...unmatchedAgainstLive(provider, live.models));
+      continue;
+    }
+
+    rows.push(...builtinRows(provider, providerEntries));
+    unmatchedWindowIds.push(
+      ...unmatchedAgainstBuiltin(provider, providerEntries),
+    );
+    unverifiedAttributions.push(
+      ...builtinAttributions(provider, providerEntries),
+    );
   }
+
+  const models = rows
+    .filter(
+      (model) =>
+        options.intelligence === undefined ||
+        model.intelligence === options.intelligence,
+    )
+    .sort(compareModelIdentity);
+
+  const base = {
+    generatedAt: quota.generatedAt,
+    schemaVersion: 2 as const,
+    intelligenceCatalog: catalogSummary(catalog),
+    catalogSources,
+  };
+  const disclosure = {
+    ...(unmatchedWindowIds.length > 0 ? { unmatchedWindowIds } : {}),
+    ...(unverifiedAttributions.length > 0 ? { unverifiedAttributions } : {}),
+  };
+
+  if (!options.sort) return { ...base, models, ...disclosure };
 
   const comparator = MODEL_COMPARATORS[options.sort];
   const sorted = [...models].sort(
@@ -90,11 +152,9 @@ export function createModelsResponse(
       comparator.compare(left, right) || compareModelIdentity(left, right),
   );
   return {
-    generatedAt: quota.generatedAt,
-    schemaVersion: 1,
-    catalog: catalogSummary(catalog),
+    ...base,
     models: sorted,
-    ...(unmatchedWindowIds.length > 0 ? { unmatchedWindowIds } : {}),
+    ...disclosure,
     sort: {
       key: options.sort,
       tieGroups: tieGroups(sorted, comparator),
@@ -158,23 +218,102 @@ export function validateModelCatalog(catalog: ModelCatalog): void {
   }
 }
 
-function modelRecord(
-  entry: ModelCatalogEntry,
-  provider: ProviderQuota,
-): ModelQuotaRecord {
-  const effective = availabilityFor(entry, provider);
-  return {
-    provider: entry.provider,
-    id: entry.id,
-    label: entry.label,
-    intelligence: entry.intelligence,
-    quotaScopes: effective ? [effective.scope] : [],
-    ...(effective ? { effective } : {}),
-    state: stateSummary(provider),
-  };
+function catalogSourceReport(live: LiveModelCatalog): ModelCatalogSourceReport {
+  return live.status === "live"
+    ? {
+        provider: live.provider,
+        status: "live",
+        fetchedAt: live.fetchedAt,
+        modelCount: live.models.length,
+        ...(live.truncated ? { reason: "partial_lineup" } : {}),
+      }
+    : { provider: live.provider, status: "unavailable", reason: live.reason };
 }
 
-function availabilityFor(
+/** One row per model the vendor itself listed on this run. */
+function liveRows(
+  live: readonly LiveModelRecord[],
+  provider: ProviderQuota,
+  entries: readonly ModelCatalogEntry[],
+): ModelQuotaRecord[] {
+  const state = stateSummary(provider);
+  return live.map((model) => {
+    const effective = liveAvailabilityFor(model, provider);
+    const intelligence = intelligenceForLiveModel(model, entries);
+    return {
+      provider: provider.provider as ModelCatalogEntry["provider"],
+      id: model.id,
+      label: model.label,
+      identitySource: "live_catalog" as const,
+      ...(intelligence ? { intelligence } : {}),
+      quotaScopes: effective ? [effective.scope] : [],
+      ...(effective ? { effective } : {}),
+      state,
+    };
+  });
+}
+
+/**
+ * Rows restating quota-axi's own built-in lineup because the vendor's could not
+ * be read. Every row is marked so it is never read as the vendor's answer.
+ */
+function builtinRows(
+  provider: ProviderQuota,
+  entries: readonly ModelCatalogEntry[],
+): ModelQuotaRecord[] {
+  const state = stateSummary(provider);
+  return entries.map((entry) => {
+    const effective = builtinAvailabilityFor(entry, provider);
+    return {
+      provider: entry.provider,
+      id: entry.id,
+      label: entry.label,
+      identitySource: "unverified_builtin" as const,
+      intelligence: entry.intelligence,
+      quotaScopes: effective ? [effective.scope] : [],
+      ...(effective ? { effective } : {}),
+      state,
+    };
+  });
+}
+
+/**
+ * Model windows a built-in entry claims for a model, published so the claim is
+ * legible as quota-axi's own unconfirmed mapping of one vendor name onto
+ * another rather than as something the vendor said.
+ */
+function builtinAttributions(
+  provider: ProviderQuota,
+  entries: readonly ModelCatalogEntry[],
+): UnverifiedWindowAttribution[] {
+  const scopes = new Set(modelScopes(provider));
+  return entries.flatMap((entry) =>
+    (entry.windowIds ?? [])
+      .map(normalizedModelScope)
+      .filter((scope) => scopes.has(scope))
+      .map((windowId) => ({
+        provider: provider.provider,
+        windowId,
+        modelId: entry.id,
+      })),
+  );
+}
+
+function liveAvailabilityFor(
+  model: LiveModelRecord,
+  provider: ProviderQuota,
+): EffectiveAvailability | undefined {
+  const availability = provider.quotaSemantics?.effectiveAvailability ?? [];
+  const scoped = availability.find((candidate) =>
+    liveModelMatchesWindowSlug(
+      model,
+      modelWindowSlug(normalizedModelScope(candidate.scope)),
+    ),
+  );
+  return scoped ?? accountAvailability(availability);
+}
+
+function builtinAvailabilityFor(
   entry: ModelCatalogEntry,
   provider: ProviderQuota,
 ): EffectiveAvailability | undefined {
@@ -185,37 +324,62 @@ function availabilityFor(
     );
     if (found) return found;
   }
+  return accountAvailability(availability);
+}
+
+function accountAvailability(
+  availability: readonly EffectiveAvailability[],
+): EffectiveAvailability | undefined {
   return availability.find(
     (candidate) =>
       candidate.scope === "all_models" || candidate.scope === "all_products",
   );
 }
 
-function unmatchedModelWindowIds(
+/** Model windows the vendor's own live lineup does not account for. */
+function unmatchedAgainstLive(
   provider: ProviderQuota,
-  entries: ModelCatalogEntry[],
+  live: readonly LiveModelRecord[],
 ): string[] {
-  const knownScopes = new Set(
-    entries
-      .filter((entry) => entry.provider === provider.provider)
-      .flatMap((entry) => entry.windowIds ?? [])
-      .map(normalizedModelScope),
-  );
-  const unmatchedScopes = new Set<string>();
-  return provider.windows
-    .filter((window) => window.kind === "model")
-    .map((window) => normalizedModelScope(window.id))
-    .filter((scope) => !knownScopes.has(scope))
-    .filter((scope) => {
-      if (unmatchedScopes.has(scope)) return false;
-      unmatchedScopes.add(scope);
-      return true;
-    })
+  return modelScopes(provider)
+    .filter(
+      (scope) =>
+        !live.some((model) =>
+          liveModelMatchesWindowSlug(model, modelWindowSlug(scope)),
+        ),
+    )
     .map((scope) => `${provider.provider}/${scope}`);
 }
 
+function unmatchedAgainstBuiltin(
+  provider: ProviderQuota,
+  entries: readonly ModelCatalogEntry[],
+): string[] {
+  const knownScopes = new Set(
+    entries.flatMap((entry) => entry.windowIds ?? []).map(normalizedModelScope),
+  );
+  return modelScopes(provider)
+    .filter((scope) => !knownScopes.has(scope))
+    .map((scope) => `${provider.provider}/${scope}`);
+}
+
+function modelScopes(provider: ProviderQuota): string[] {
+  const seen = new Set<string>();
+  return provider.windows
+    .filter((window) => window.kind === "model")
+    .map((window) => normalizedModelScope(window.id))
+    .filter((scope) => {
+      if (seen.has(scope)) return false;
+      seen.add(scope);
+      return true;
+    });
+}
+
 function normalizedModelScope(windowId: string): string {
-  return windowId.replace(/_\d+$/, "").replace(/:(?:5h|7d|window:[^:]+)$/, "");
+  const deduped = windowId.startsWith("model:")
+    ? windowId
+    : windowId.replace(/_\d+$/, "");
+  return deduped.replace(/:(?:5h|7d|window:[^:]+?)(?:_\d+)?$/, "");
 }
 
 function stateSummary(provider: ProviderQuota): ProviderStateSummary {

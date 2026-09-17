@@ -17,6 +17,8 @@ import { clampPercent, nowIso, retryAfterToIso } from "../lib/time.js";
 import type {
   AuthProviderReport,
   AuthSourceReport,
+  LiveModelCatalog,
+  LiveModelRecord,
   ProviderAdapter,
   ProviderOptions,
   ProviderQuota,
@@ -42,6 +44,14 @@ import { withUsageFetchFailure } from "./usage-fetch-failure.js";
 
 const API_URL = "https://api.anthropic.com/api/oauth/usage";
 const PROFILE_API_URL = "https://api.anthropic.com/api/oauth/profile";
+/**
+ * Anthropic's own model listing. It is a read-only GET that enumerates the
+ * models this account may use: it starts no session, sends no model request,
+ * and spends none of the quota being measured, so it is safe on the same
+ * never-spend footing as the usage probe.
+ */
+const MODELS_API_URL = "https://api.anthropic.com/v1/models?limit=100";
+const MODELS_API_VERSION = "2023-06-01";
 const OAUTH_BETA = "oauth-2025-04-20";
 const CLAUDE_CODE_USER_AGENT = "claude-code/2.1.202";
 const API_TIMEOUT_MS = 15_000;
@@ -140,6 +150,7 @@ export const claudeAdapter: ProviderAdapter = {
   label: "Claude",
   fetchQuota,
   inspectAuth,
+  fetchModelCatalog,
 };
 
 /**
@@ -299,12 +310,16 @@ function unconfirmedRefreshFailure(): ClaudeFailure {
   });
 }
 
-async function attemptClaudeQuota(
-  options: ProviderOptions,
-  attempts: SourceAttempt[],
-): Promise<ClaudeQuotaPass> {
-  const credentialStates = await readCredentialStates(options);
-  const credentialCandidates = credentialStates
+/**
+ * Every testable credential in the order Claude Code itself keeps them: the
+ * Keychain owns the session on macOS, then the longest-lived stored token.
+ * Both the quota read and the model-listing read select through this, so one
+ * run can never join one account's windows to another account's lineup.
+ */
+function orderedCredentialCandidates(
+  states: readonly CredentialState[],
+): (AvailableCredentialState | AdvisoryExpiredCredentialState)[] {
+  return states
     .filter(
       (
         state,
@@ -326,6 +341,14 @@ async function attemptClaudeQuota(
       }
       return (b.credentials.expiresAt ?? 0) - (a.credentials.expiresAt ?? 0);
     });
+}
+
+async function attemptClaudeQuota(
+  options: ProviderOptions,
+  attempts: SourceAttempt[],
+): Promise<ClaudeQuotaPass> {
+  const credentialStates = await readCredentialStates(options);
+  const credentialCandidates = orderedCredentialCandidates(credentialStates);
 
   for (const state of credentialStates) {
     if (state.status === "available" || state.status === "expired") continue;
@@ -1219,4 +1242,117 @@ class ClaudeFailure extends Error {
     this.usageFetchFailure = true;
     return this;
   }
+}
+
+/**
+ * Read Anthropic's own current model lineup.
+ *
+ * This is the vendor naming its models, which is the only thing that can carry
+ * model identity: quota-axi's built-in catalog is editorial and goes stale
+ * silently. Every outcome other than a listing the vendor actually returned is
+ * `unavailable` with a reason, so the join discloses the gap rather than
+ * passing off the built-in lineup as Anthropic's answer.
+ *
+ * It reuses the quota path's stored credentials read-only and never refreshes:
+ * a model listing is not worth spending a single-use refresh-token exchange on,
+ * and the quota read in the same run already owns that decision. Only a
+ * 401 moves to the next credential, the same status the usage read treats as
+ * definitive; every other failure, 403 included, stops there, because promoting
+ * a sibling store on a WAF denial or a 503 could publish one account's lineup
+ * beside another account's windows.
+ */
+export async function fetchModelCatalog(
+  options: ProviderOptions,
+): Promise<LiveModelCatalog> {
+  const candidates = orderedCredentialCandidates(
+    await readCredentialStates(options),
+  );
+  if (candidates.length === 0) {
+    return {
+      provider: "claude",
+      status: "unavailable",
+      reason: "no_credential",
+    };
+  }
+
+  let reason = "catalog_unavailable";
+  for (const state of candidates) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+    try {
+      const response = await providerFetch(MODELS_API_URL, {
+        headers: {
+          authorization: `Bearer ${state.credentials.accessToken}`,
+          "anthropic-beta": OAUTH_BETA,
+          "anthropic-version": MODELS_API_VERSION,
+          "User-Agent": CLAUDE_CODE_USER_AGENT,
+          accept: "application/json",
+        },
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        reason = `catalog_http_${response.status}`;
+        if (response.status === 401) continue;
+        break;
+      }
+      const payload: unknown = await response.json();
+      const models = normalizeClaudeModelCatalog(payload);
+      if (models.length === 0) {
+        reason = "catalog_unrecognized";
+        break;
+      }
+      return {
+        provider: "claude",
+        status: "live",
+        fetchedAt: nowIso(),
+        models,
+        ...(claudeModelCatalogIsTruncated(payload) ? { truncated: true } : {}),
+      };
+    } catch (error) {
+      reason =
+        error instanceof Error && error.name === "AbortError"
+          ? "catalog_timeout"
+          : "catalog_unreachable";
+      break;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return { provider: "claude", status: "unavailable", reason };
+}
+
+/**
+ * Whether the vendor said this page is not the whole lineup. quota-axi does not
+ * follow the vendor's pages here; it discloses that what it read is partial so
+ * an incomplete lineup is never published as the vendor's complete answer.
+ */
+export function claudeModelCatalogIsTruncated(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object") return false;
+  return (payload as { has_more?: unknown }).has_more === true;
+}
+
+/** Accept only records that carry the vendor's own id; never invent a label. */
+export function normalizeClaudeModelCatalog(
+  payload: unknown,
+): LiveModelRecord[] {
+  if (!payload || typeof payload !== "object") return [];
+  const data = (payload as { data?: unknown }).data;
+  if (!Array.isArray(data)) return [];
+  const models: LiveModelRecord[] = [];
+  for (const record of data) {
+    if (!record || typeof record !== "object") continue;
+    const { id, display_name: displayName } = record as {
+      id?: unknown;
+      display_name?: unknown;
+    };
+    if (typeof id !== "string" || !id.trim()) continue;
+    models.push({
+      id,
+      label:
+        typeof displayName === "string" && displayName.trim()
+          ? displayName
+          : id,
+    });
+  }
+  return models;
 }
