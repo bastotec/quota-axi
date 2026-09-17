@@ -78,6 +78,12 @@ function listingRequests(fetchMock: { mock: { calls: unknown[][] } }) {
   );
 }
 
+function usageRequests(fetchMock: { mock: { calls: unknown[][] } }) {
+  return fetchMock.mock.calls.filter((call) =>
+    String(call[0]).includes("/usage"),
+  );
+}
+
 describe("normalizeClaudeModelCatalog", () => {
   it("keeps every record carrying the vendor's own id", async () => {
     const { normalizeClaudeModelCatalog } =
@@ -508,6 +514,86 @@ describe("Claude live model catalog", () => {
     // endpoint is asked exactly once, with the credential that works.
     expect(listingRequests(fetchMock)).toHaveLength(1);
     expect(keychainValueReads(execFileText)).toHaveLength(1);
+  });
+
+  /**
+   * Regression: the latch was consulted once before the candidate loop, so two
+   * stores holding the identical token still produced two identical 401s in
+   * one pass. Consulting it per candidate withholds the second one.
+   */
+  it("sends one 401 when both Claude stores hold the same token", async () => {
+    usePlatform("darwin");
+    useTempHome();
+    writeCredentials("shared-token");
+    const execFileText = vi.fn(async () =>
+      JSON.stringify({ claudeAiOauth: { accessToken: "shared-token" } }),
+    );
+    vi.doMock("../../src/lib/process.js", () => ({ execFileText }));
+    const fetchMock = vi.fn(async () => new Response(null, { status: 401 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { createProviderCredentialCache } =
+      await import("../../src/providers/credential-cache.js");
+    const { fetchModelCatalog, fetchQuota } =
+      await import("../../src/providers/claude.js");
+    const options = {
+      allowKeychainPrompt: true,
+      refreshCredentials: false,
+      credentialCache: createProviderCredentialCache(),
+    };
+
+    const quota = await fetchQuota(options);
+
+    expect(usageRequests(fetchMock)).toHaveLength(1);
+    expect(quota.attempts).toContainEqual({
+      source: "oauth-file",
+      status: "skipped",
+      error: "credential_rejected_this_run",
+      credentialPresent: true,
+    });
+    // Withheld, never absent: Anthropic's own verdict still stands.
+    expect(quota.state.status).toBe("auth_required");
+    expect(quota.state.error).toBe("Claude sign-in required");
+
+    expect(await fetchModelCatalog(options)).toEqual({
+      provider: "claude",
+      status: "unavailable",
+      reason: "credential_rejected_this_run",
+    });
+    expect(listingRequests(fetchMock)).toHaveLength(0);
+  });
+
+  /**
+   * The same shape with no prior quota read: the listing loop itself must not
+   * present a token its own earlier candidate just saw rejected.
+   */
+  it("asks the listing endpoint once when both stores hold the same token", async () => {
+    usePlatform("darwin");
+    useTempHome();
+    writeCredentials("shared-token");
+    const execFileText = vi.fn(async () =>
+      JSON.stringify({ claudeAiOauth: { accessToken: "shared-token" } }),
+    );
+    vi.doMock("../../src/lib/process.js", () => ({ execFileText }));
+    const fetchMock = vi.fn(async () => new Response(null, { status: 401 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { createProviderCredentialCache } =
+      await import("../../src/providers/credential-cache.js");
+    const { fetchModelCatalog } = await import("../../src/providers/claude.js");
+
+    expect(
+      await fetchModelCatalog({
+        allowKeychainPrompt: true,
+        refreshCredentials: false,
+        credentialCache: createProviderCredentialCache(),
+      }),
+    ).toEqual({
+      provider: "claude",
+      status: "unavailable",
+      reason: "catalog_http_401",
+    });
+    expect(listingRequests(fetchMock)).toHaveLength(1);
   });
 
   it("reads the store again for each read when no cache is shared", async () => {

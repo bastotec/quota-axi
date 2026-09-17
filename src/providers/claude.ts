@@ -21,7 +21,6 @@ import type {
   LiveModelRecord,
   ModelWindowScope,
   ProviderAdapter,
-  ProviderCredentialCache,
   ProviderOptions,
   ProviderQuota,
   ProviderStatus,
@@ -253,14 +252,18 @@ export async function fetchQuota(
     } else {
       const run = await runRefreshDelegate(CLAUDE_CLI_REFRESH_DELEGATE);
       attempts.push(refreshDelegateAttempt(CLAUDE_CLI_REFRESH_DELEGATE, run));
-      // The CLI may have rewritten the store, so the resolution this run shares
-      // is no longer necessarily what is on disk. This is the one thing
-      // quota-axi knows rewrote it. It is not a verdict on the credential that
-      // resolution held: if the CLI rotated nothing, the same token resolves
-      // again and stays withheld by the rejection latch.
-      options.credentialCache?.invalidate(
-        credentialCacheKey(resolveClaudeProfileLocations()),
-      );
+      // Only an outcome where the CLI actually got to run can have rewritten
+      // the store, so only those drop the resolution this run shares. An
+      // unavailable CLI and a spawn failure started no process at all, and
+      // re-resolving there would buy nothing but a second macOS Keychain value
+      // read. Dropping the resolution is a statement about the store, never a
+      // verdict on the credential it held: if the CLI rotated nothing, the same
+      // token resolves again and stays withheld by the rejection latch.
+      if (run.status === "ran" || run.status === "unconfirmed") {
+        options.credentialCache?.invalidate(
+          credentialCacheKey(resolveClaudeProfileLocations()),
+        );
+      }
       if (run.status === "ran") {
         const retry = await attemptClaudeQuota(options, attempts);
         if (retry.kind === "success") return retry.report;
@@ -394,11 +397,7 @@ async function attemptClaudeQuota(
   attempts: SourceAttempt[],
 ): Promise<ClaudeQuotaPass> {
   const credentialStates = await readCredentialStates(options);
-  const { usable: credentialCandidates, rejected: rejectedCandidates } =
-    partitionRejectedCandidates(
-      orderedCredentialCandidates(credentialStates),
-      options.credentialCache,
-    );
+  const credentialCandidates = orderedCredentialCandidates(credentialStates);
 
   for (const state of credentialStates) {
     if (state.status === "available" || state.status === "expired") continue;
@@ -422,112 +421,118 @@ async function attemptClaudeQuota(
     });
   }
 
-  // A retry after the delegated refresh re-resolves the store. When the vendor
-  // CLI did not actually rotate it, the token this pass would present is the
-  // one Anthropic already rejected, so it is withheld and named instead of
-  // sent a second time.
-  for (const state of rejectedCandidates) {
-    attempts.push({
-      source: state.credentials.source,
-      status: "skipped",
-      error: CREDENTIAL_REJECTED_THIS_RUN,
-      credentialPresent: true,
-    });
-  }
-
   let definitiveFailure: ClaudeFailure | undefined;
   let transientFailure: ClaudeFailure | undefined;
   let refreshableExpiredRejected = false;
+  let presentedAnyCredential = false;
+  let withheldAnyCredential = false;
 
-  if (credentialCandidates.length > 0) {
-    for (const state of credentialCandidates) {
-      const credential = state.credentials;
-      attempts.push({ source: credential.source, status: "failed" });
-      try {
-        const quota = await fetchOauthUsage(credential);
-        attempts[attempts.length - 1] = {
-          source: credential.source,
-          status: "success",
-        };
-        attempts.push(
-          quota.identityError
-            ? {
-                source: "oauth-profile",
-                status: "failed",
-                error: quota.identityError,
-                // The identity lookup is not a credential source, so its
-                // failure never marks a source as superseded; `account`
-                // already reports the unverified identity.
-                degraded: false,
-              }
-            : { source: "oauth-profile", status: "success" },
+  for (const state of credentialCandidates) {
+    const credential = state.credentials;
+    // The latch is consulted per candidate, so a token Anthropic rejected
+    // earlier is withheld even when a sibling store holds the same value or
+    // the delegated refresh rotated nothing. It is withheld and named, not
+    // sent a second time.
+    if (isRejectedClaudeCredential(options, credential)) {
+      withheldAnyCredential = true;
+      attempts.push({
+        source: credential.source,
+        status: "skipped",
+        error: CREDENTIAL_REJECTED_THIS_RUN,
+        credentialPresent: true,
+      });
+      continue;
+    }
+    presentedAnyCredential = true;
+    attempts.push({ source: credential.source, status: "failed" });
+    try {
+      const quota = await fetchOauthUsage(credential);
+      attempts[attempts.length - 1] = {
+        source: credential.source,
+        status: "success",
+      };
+      attempts.push(
+        quota.identityError
+          ? {
+              source: "oauth-profile",
+              status: "failed",
+              error: quota.identityError,
+              // The identity lookup is not a credential source, so its
+              // failure never marks a source as superseded; `account`
+              // already reports the unverified identity.
+              degraded: false,
+            }
+          : { source: "oauth-profile", status: "success" },
+      );
+      return {
+        kind: "success",
+        report: successProvider({
+          provider: "claude",
+          label: "Claude",
+          source: "oauth",
+          plan: quota.plan,
+          account: quota.account,
+          windows: quota.windows,
+          refreshedAt: quota.refreshedAt,
+          sourcesTried: sourceNames(attempts),
+          attempts,
+        }),
+      };
+    } catch (error) {
+      const failure = claudeFailureFor(error);
+      attempts[attempts.length - 1] = {
+        source: credential.source,
+        status: "failed",
+        error: failure.code,
+      };
+      if (failure.definitiveAuth) {
+        definitiveFailure ??= failure;
+        // Anthropic rejected this bearer outright, so no later read in this
+        // run presents it again - not the post-refresh retry, and not the
+        // model-lineup read. The latch is on the credential, so a rotation
+        // that replaces it is unaffected and a sibling store holding the
+        // same token is covered.
+        options.credentialCache?.rejectCredential(
+          claudeCredentialId(credential),
         );
-        return {
-          kind: "success",
-          report: successProvider({
-            provider: "claude",
-            label: "Claude",
-            source: "oauth",
-            plan: quota.plan,
-            account: quota.account,
-            windows: quota.windows,
-            refreshedAt: quota.refreshedAt,
-            sourcesTried: sourceNames(attempts),
-            attempts,
-          }),
-        };
-      } catch (error) {
-        const failure = claudeFailureFor(error);
-        attempts[attempts.length - 1] = {
-          source: credential.source,
-          status: "failed",
-          error: failure.code,
-        };
-        if (failure.definitiveAuth) {
-          definitiveFailure ??= failure;
-          // Anthropic rejected this bearer outright, so no later read in this
-          // run presents it again - not the post-refresh retry, and not the
-          // model-lineup read. The latch is on the credential, so a rotation
-          // that replaces it is unaffected and a sibling store holding the
-          // same token is covered.
-          options.credentialCache?.rejectCredential(
-            claudeCredentialId(credential),
-          );
-          if (state.status === "expired" && state.refreshable) {
-            refreshableExpiredRejected = true;
-          }
-        } else {
-          transientFailure = failure.withUsageFetchFailure();
-          break;
+        if (state.status === "expired" && state.refreshable) {
+          refreshableExpiredRejected = true;
         }
+      } else {
+        transientFailure = failure.withUsageFetchFailure();
+        break;
       }
     }
-  } else if (rejectedCandidates.length > 0) {
-    // Withheld, not absent. Every credential this profile offers was already
-    // definitively rejected in this run, so the verdict is Anthropic's own -
-    // the one a second round of identical 401s would have produced - and never
-    // the `credentials_missing` a bare empty candidate list would imply.
-    definitiveFailure = new ClaudeFailure(CLAUDE_SIGN_IN_REQUIRED, {
-      status: "auth_required",
-      definitiveAuth: true,
-    });
-  } else {
-    const skipped = credentialStates.find(
-      (state): state is SkippedCredentialState => state.status === "skipped",
-    );
-    if (skipped) {
-      transientFailure = new ClaudeFailure(
-        skipped.source.error ?? "Claude quota unavailable",
-        { staleEligible: true },
-      );
+  }
+
+  if (!presentedAnyCredential) {
+    if (withheldAnyCredential) {
+      // Withheld, not absent. Every credential this profile offers was already
+      // definitively rejected in this run, so the verdict is Anthropic's own -
+      // the one a second round of identical 401s would have produced - and never
+      // the `credentials_missing` a bare empty candidate list would imply.
+      definitiveFailure = new ClaudeFailure(CLAUDE_SIGN_IN_REQUIRED, {
+        status: "auth_required",
+        definitiveAuth: true,
+      });
     } else {
-      const invalid = credentialStates.some(
-        (state) => state.status === "invalid",
+      const skipped = credentialStates.find(
+        (state): state is SkippedCredentialState => state.status === "skipped",
       );
-      definitiveFailure = new ClaudeFailure(
-        invalid ? "credentials_invalid" : "credentials_missing",
-        { status: "auth_required", definitiveAuth: true },
-      );
+      if (skipped) {
+        transientFailure = new ClaudeFailure(
+          skipped.source.error ?? "Claude quota unavailable",
+          { staleEligible: true },
+        );
+      } else {
+        const invalid = credentialStates.some(
+          (state) => state.status === "invalid",
+        );
+        definitiveFailure = new ClaudeFailure(
+          invalid ? "credentials_invalid" : "credentials_missing",
+          { status: "auth_required", definitiveAuth: true },
+        );
+      }
     }
   }
 
@@ -865,27 +870,23 @@ function claudeCredentialId(credentials: ClaudeCredentials): string {
 }
 
 /**
- * Split the ordered candidates into the ones a later read may still present
- * and the ones this run already watched Anthropic definitively reject.
+ * Whether this run already watched Anthropic definitively reject exactly this
+ * credential. Consulted immediately before each candidate would be presented,
+ * so a latch set earlier in the same pass - by a sibling store holding the same
+ * token - withholds it too.
  *
  * Withholding is not the same as having no credential: the caller reports the
  * rejection that produced the latch, never a missing or absent store.
  */
-function partitionRejectedCandidates(
-  candidates: readonly ClaudeCredentialCandidate[],
-  cache: ProviderCredentialCache | undefined,
-): {
-  usable: ClaudeCredentialCandidate[];
-  rejected: ClaudeCredentialCandidate[];
-} {
-  const usable: ClaudeCredentialCandidate[] = [];
-  const rejected: ClaudeCredentialCandidate[] = [];
-  for (const candidate of candidates) {
-    if (cache?.isCredentialRejected(claudeCredentialId(candidate.credentials)))
-      rejected.push(candidate);
-    else usable.push(candidate);
-  }
-  return { usable, rejected };
+function isRejectedClaudeCredential(
+  options: ProviderOptions,
+  credentials: ClaudeCredentials,
+): boolean {
+  return (
+    options.credentialCache?.isCredentialRejected(
+      claudeCredentialId(credentials),
+    ) ?? false
+  );
 }
 
 async function resolveCredentialStates(
@@ -1423,24 +1424,22 @@ class ClaudeFailure extends Error {
 export async function fetchModelCatalog(
   options: ProviderOptions,
 ): Promise<LiveModelCatalog> {
-  const { usable: candidates, rejected } = partitionRejectedCandidates(
-    orderedCredentialCandidates(await readCredentialStates(options)),
-    options.credentialCache,
+  const candidates = orderedCredentialCandidates(
+    await readCredentialStates(options),
   );
-  if (candidates.length === 0) {
-    return {
-      provider: "claude",
-      status: "unavailable",
-      // A credential the quota read watched Anthropic reject is withheld, not
-      // absent: the listing endpoint never sees it, and the gap is disclosed
-      // as the rejection it is rather than as a missing store.
-      reason:
-        rejected.length > 0 ? CREDENTIAL_REJECTED_THIS_RUN : "no_credential",
-    };
-  }
 
   let reason = "catalog_unavailable";
+  let presentedAnyCredential = false;
+  let withheldAnyCredential = false;
   for (const state of candidates) {
+    // Checked per candidate, so a bearer latched closed a moment ago - by the
+    // quota read, or by the 401 a sibling store's identical token just drew
+    // below - never reaches the listing endpoint.
+    if (isRejectedClaudeCredential(options, state.credentials)) {
+      withheldAnyCredential = true;
+      continue;
+    }
+    presentedAnyCredential = true;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
     try {
@@ -1489,6 +1488,18 @@ export async function fetchModelCatalog(
     } finally {
       clearTimeout(timer);
     }
+  }
+  if (!presentedAnyCredential) {
+    return {
+      provider: "claude",
+      status: "unavailable",
+      // A credential the quota read watched Anthropic reject is withheld, not
+      // absent: the listing endpoint never sees it, and the gap is disclosed
+      // as the rejection it is rather than as a missing store.
+      reason: withheldAnyCredential
+        ? CREDENTIAL_REJECTED_THIS_RUN
+        : "no_credential",
+    };
   }
   return { provider: "claude", status: "unavailable", reason };
 }
