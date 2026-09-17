@@ -335,19 +335,6 @@ export type QuotaAxiResponse = {
   help?: string[];
 };
 
-/**
- * A per-invocation cache for one provider's resolved credential state, so the
- * several reads of a single command resolve the store once. Created by
- * `createProviderCredentialCache` in `src/providers/credential-cache.ts`, which
- * documents why it exists and what it may hold.
- */
-export type ProviderCredentialCache = {
-  /** The cached resolution for `key`, resolving it once on first use. */
-  read<T>(key: string, resolve: () => Promise<T>): Promise<T>;
-  /** Drop `key`, so the next read resolves the store again. */
-  invalidate(key: string): void;
-};
-
 export type ProviderOptions = {
   allowKeychainPrompt: boolean;
   /**
@@ -359,12 +346,6 @@ export type ProviderOptions = {
    * disk.
    */
   refreshCredentials: boolean;
-  /**
-   * Shares one resolved credential across the several reads of a single
-   * command, so the store is read once. Absent means no sharing. See
-   * `src/providers/credential-cache.ts`.
-   */
-  credentialCache?: ProviderCredentialCache;
 };
 
 export type ProviderAdapter = {

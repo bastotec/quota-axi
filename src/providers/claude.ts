@@ -234,11 +234,6 @@ export async function fetchQuota(
     } else {
       const run = await runRefreshDelegate(CLAUDE_CLI_REFRESH_DELEGATE);
       attempts.push(refreshDelegateAttempt(CLAUDE_CLI_REFRESH_DELEGATE, run));
-      // The CLI has rewritten the store, so the resolution this run shares is
-      // no longer what is on disk.
-      options.credentialCache?.invalidate(
-        credentialCacheKey(resolveClaudeProfileLocations()),
-      );
       if (run.status === "ran") {
         const retry = await attemptClaudeQuota(options, attempts);
         if (retry.kind === "success") return retry.report;
@@ -373,8 +368,7 @@ async function attemptClaudeQuota(
   options: ProviderOptions,
   attempts: SourceAttempt[],
 ): Promise<ClaudeQuotaPass> {
-  const locations = resolveClaudeProfileLocations();
-  const credentialStates = await readCredentialStates(options, locations);
+  const credentialStates = await readCredentialStates(options);
   const credentialCandidates = orderedCredentialCandidates(credentialStates);
 
   for (const state of credentialStates) {
@@ -449,12 +443,6 @@ async function attemptClaudeQuota(
         };
         if (failure.definitiveAuth) {
           definitiveFailure ??= failure;
-          // Anthropic rejected this bearer, so the resolution this run shares
-          // is dropped and a later read resolves the store again - picking up
-          // a rotation this command did not perform. Nothing here remembers
-          // the rejected token, so an unchanged store yields it again and the
-          // lineup read presents it a second time.
-          options.credentialCache?.invalidate(credentialCacheKey(locations));
           if (state.status === "expired" && state.refreshable) {
             refreshableExpiredRejected = true;
           }
@@ -780,36 +768,9 @@ function slugify(value: string): string {
     .replace(/^_+|_+$/g, "");
 }
 
-/**
- * Every credential this profile can offer, resolved once per command.
- *
- * Reading the store is the step that can prompt for the macOS Keychain value
- * and the step that decides which account answers, so a run that reads Claude
- * twice - `models` reads quota and then the vendor's lineup - resolves it once
- * and reuses that resolution. It is invalidated when the store may have been
- * rewritten - by the delegated refresh, or externally after a definitive
- * rejection - so the next read sees what the store holds now. Invalidation is
- * not a guarantee about the credential: no rejected token is remembered, so a
- * store that did not change resolves the same credential again and a later
- * read in the same command presents it again.
- */
 async function readCredentialStates(
   options: ProviderOptions,
   locations = resolveClaudeProfileLocations(),
-): Promise<CredentialState[]> {
-  const resolve = () => resolveCredentialStates(options, locations);
-  return options.credentialCache
-    ? options.credentialCache.read(credentialCacheKey(locations), resolve)
-    : resolve();
-}
-
-function credentialCacheKey(locations: ClaudeProfileLocations): string {
-  return `claude:${locations.credentialFile}:${locations.keychainService}`;
-}
-
-async function resolveCredentialStates(
-  options: ProviderOptions,
-  locations: ClaudeProfileLocations,
 ): Promise<CredentialState[]> {
   const states: CredentialState[] = [];
 
