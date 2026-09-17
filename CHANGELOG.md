@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.1.43](https://github.com/bastotec/quota-axi/compare/quota-axi-v0.1.42...quota-axi-v0.1.43) (2026-09-17)
+
+
+### Features
+
+* **models:** source model identity from each provider's live catalog ([#3](https://github.com/bastotec/quota-axi/issues/3)) ([a327c68](https://github.com/bastotec/quota-axi/commit/a327c684c11420bd6bb4748ac299e3bad90f94cf))
+
+
+### Bug Fixes
+
+* **models:** bind model rows to the vendor scope that governs them ([#4](https://github.com/bastotec/quota-axi/issues/4)) ([b469063](https://github.com/bastotec/quota-axi/commit/b4690632be869b18510bda71d2c58ac7c6ca2305))
+* **providers:** share one Claude credential resolution across a models run ([#5](https://github.com/bastotec/quota-axi/issues/5)) ([8fe2855](https://github.com/bastotec/quota-axi/commit/8fe285501d185b343f3af8a536cf086542bc5c7e))
+* **providers:** tell "no credential found" apart from "signed out" ([#6](https://github.com/bastotec/quota-axi/issues/6)) ([1988793](https://github.com/bastotec/quota-axi/commit/1988793dc9eba998e52eaf7116a8f184e18d6167))
+* recognize provably unopened future model windows ([#162](https://github.com/bastotec/quota-axi/issues/162)) ([9e693a2](https://github.com/bastotec/quota-axi/commit/9e693a2cac97d64729e6953a65c90c8dde81a07c))
+
 ## [0.1.42](https://github.com/kunchenguid/quota-axi/compare/quota-axi-v0.1.41...quota-axi-v0.1.42) (2026-09-12)
 
 
