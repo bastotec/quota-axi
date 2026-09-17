@@ -86,8 +86,14 @@ type AdvisoryExpiredCredentialState = {
   credentials: CodexCredentials;
   source: AuthSourceReport;
 };
+/**
+ * `unreadable` is a store quota-axi could not open at all - permissions, a
+ * directory in its place. It says nothing about what the file holds, so it is
+ * neither an auth verdict nor evidence about a credential, mirroring Z.AI's
+ * `error` resolution.
+ */
 type UnavailableCredentialState = {
-  status: "missing" | "invalid";
+  status: "missing" | "invalid" | "unreadable";
   source: AuthSourceReport;
 };
 type CredentialState =
@@ -181,10 +187,11 @@ async function fetchQuotaWithDependencies(
   } else {
     attempts.push({
       source: "oauth",
-      status: "skipped",
+      status: credentialState.status === "unreadable" ? "failed" : "skipped",
       error: `credentials_${credentialState.status}`,
-      // A malformed store still holds a credential, so a sibling source that
-      // answers supersedes it rather than replacing it silently.
+      // A store that exists still stands between this run and a credential, so
+      // a sibling source that answers supersedes it rather than replacing it
+      // silently.
       ...(credentialState.status === "missing"
         ? {}
         : { credentialPresent: true }),
@@ -194,10 +201,14 @@ async function fetchQuotaWithDependencies(
       // credential is still what this read needs, but it must not claim the
       // account is signed out on evidence the run never gathered.
       finalError = "Codex credential required";
+    } else if (credentialState.status === "unreadable") {
+      // The file was never opened, so nothing is known about what it holds:
+      // not an auth verdict, and not a claim that it holds no login.
+      finalError = "Codex auth.json could not be read; check its permissions";
     } else {
-      // The store held a credential in a shape this adapter cannot send, so no
-      // endpoint examined it: that is a stored-credential problem, not a
-      // sign-out.
+      // The store was read and yielded nothing this adapter can send, so no
+      // endpoint examined a credential: that is a stored-credential problem,
+      // not a sign-out.
       evidence = strongerEvidence(evidence, "unusable");
       finalError =
         "Codex credential required; local store holds no usable ChatGPT login";
@@ -813,15 +824,25 @@ function extractCredentialState(
       source: { source: "auth-json", path, status: "missing" },
     };
   if (raw.status === "invalid")
-    return {
-      status: "invalid",
-      source: {
-        source: "auth-json",
-        path,
-        status: "invalid",
-        error: raw.error,
-      },
-    };
+    return raw.error === "file_read_error"
+      ? {
+          status: "unreadable",
+          source: {
+            source: "auth-json",
+            path,
+            status: "error",
+            error: raw.error,
+          },
+        }
+      : {
+          status: "invalid",
+          source: {
+            source: "auth-json",
+            path,
+            status: "invalid",
+            error: raw.error,
+          },
+        };
   const data = objectValue(raw.value);
   if (!data)
     return {

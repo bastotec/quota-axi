@@ -1054,6 +1054,57 @@ describe("Codex credential-state reporting", () => {
     expect(result.state.error).not.toMatch(/sign-in/i);
   });
 
+  it("reports an unreadable store as unreadable, claiming nothing about its contents", async () => {
+    // A directory in the auth file's place fails the read for every user,
+    // including root, where a mode-0000 file would still open.
+    mkdirSync(authFile());
+    const fetchMock = vi.fn(async () => new Response(null, { status: 401 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { fetchQuota } = await import("../../src/providers/codex.js");
+    const result = await fetchQuota({
+      allowKeychainPrompt: false,
+      refreshCredentials: false,
+    });
+
+    // The file was never opened, so the run holds no evidence about the
+    // credential: neither an auth verdict nor a claim that it holds none.
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.state.status).not.toBe("auth_required");
+    expect(result.state.reason).toBeUndefined();
+    expect(result.state.error).toMatch(/could not be read/i);
+    expect(result.state.error ?? "").not.toMatch(/sign-in|signed out|login/i);
+    expect(result.attempts).toContainEqual(
+      expect.objectContaining({
+        source: "oauth",
+        error: "credentials_unreadable",
+        credentialPresent: true,
+      }),
+    );
+  });
+
+  it("still lets the Pi source answer when the native store is unreadable", async () => {
+    mkdirSync(authFile());
+    writePiAuth(piOauthEntry());
+    const bearers: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: unknown, init?: RequestInit) => {
+        bearers.push(new Headers(init?.headers).get("authorization") ?? "");
+        return successfulUsageResponse();
+      }),
+    );
+
+    const { fetchQuota } = await import("../../src/providers/codex.js");
+    const result = await fetchQuota({
+      allowKeychainPrompt: false,
+      refreshCredentials: false,
+    });
+
+    expect(result.state.status).toBe("fresh");
+    expect(bearers).toEqual(["Bearer pi-fixture-access-token"]);
+  });
+
   it("reports an unusable stored credential as unusable, not as a sign-out", async () => {
     // The store held a credential, so quota-axi did not come up empty-handed -
     // but it is not in a shape any endpoint could be shown, so no verdict
