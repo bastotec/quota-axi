@@ -22,7 +22,7 @@ import type {
   QuotaWindow,
   SourceAttempt,
 } from "../types.js";
-import { noLocalCredentialReason } from "./common.js";
+import { localCredentialReason } from "./common.js";
 import { VERSION } from "../version.js";
 
 const ZAI_QUOTA_PATH = "/api/monitor/usage/quota/limit";
@@ -219,6 +219,11 @@ async function acquireZaiQuota(
         source: OPENCODE_AUTH_SOURCE,
         status: resolution.status === "missing" ? "skipped" : "failed",
         error: failure.code,
+        // A store that named Z.AI is not genuinely absent, even when the key
+        // it held is not one this adapter can send.
+        ...(resolution.status === "missing" && resolution.credentialPresent
+          ? { credentialPresent: true }
+          : {}),
       };
       return failureReport(failure, attempts, dependencies);
     }
@@ -286,14 +291,17 @@ function credentialFailureFor(
   resolution: Exclude<ZaiCredentialResolution, { status: "available" }>,
 ): ZaiFailure {
   if (resolution.status === "missing") {
-    // No opencode store held a Z.AI key. The read still needs one, but nothing
-    // here says the account is signed out - see `noLocalCredentialReason`.
+    // No key this adapter can send. The read still needs one, but nothing here
+    // says the account is signed out - see `localCredentialReason`. Retiring
+    // the cached snapshot is an auth verdict too: finding no credential is the
+    // absence of evidence, so only a store that held one may retire it.
+    const credentialPresent = resolution.credentialPresent === true;
     return new ZaiFailure("zai_credential_unavailable", {
       status: "auth_required",
-      definitiveAuth: true,
-      reason: noLocalCredentialReason(
+      definitiveAuth: credentialPresent,
+      reason: localCredentialReason(
         "auth_required",
-        resolution.credentialPresent === true,
+        credentialPresent ? "unusable" : "none",
       ),
     });
   }

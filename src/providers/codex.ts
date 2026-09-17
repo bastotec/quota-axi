@@ -20,9 +20,11 @@ import type {
   QuotaWindow,
   SourceAttempt,
 } from "../types.js";
+import type { LocalCredentialEvidence } from "./common.js";
 import {
   failedProvider,
-  noLocalCredentialReason,
+  localCredentialReason,
+  strongerEvidence,
   sourceNames,
   staleFromCache,
   statusFromError,
@@ -159,10 +161,10 @@ async function fetchQuotaWithDependencies(
   // run, and letting an expired Pi entry restate it as an auth problem would
   // make statusFromError advise a sign-in for what is a network outage.
   let errorIsDefault = true;
-  // True once any store quota-axi reads held a credential, usable or not.
-  // While it stays false the run has established nothing about the account:
-  // see `noLocalCredentialReason`.
-  let credentialFound = false;
+  // What this run established about a local credential, strengthening as
+  // sources are read. While it stays `none` the run has established nothing
+  // about the account: see `localCredentialReason`.
+  let evidence: LocalCredentialEvidence = "none";
 
   const credentialState = readCredentialState();
   const oauthCandidates: CredentialCandidate<CodexAttemptCredential>[] = [];
@@ -170,7 +172,7 @@ async function fetchQuotaWithDependencies(
     credentialState.status === "available" ||
     credentialState.status === "expired"
   ) {
-    credentialFound = true;
+    evidence = strongerEvidence(evidence, "tested");
     oauthCandidates.push({
       source: "oauth",
       localState: credentialState.status === "available" ? "valid" : "expired",
@@ -193,8 +195,11 @@ async function fetchQuotaWithDependencies(
       // account is signed out on evidence the run never gathered.
       finalError = "Codex credential required";
     } else {
-      credentialFound = true;
-      finalError = "Codex sign-in required";
+      // The store held a credential in a shape this adapter cannot send, so no
+      // endpoint examined it: that is a stored-credential problem, not a
+      // sign-out.
+      evidence = strongerEvidence(evidence, "unusable");
+      finalError = "Codex stored credential unusable, sign-in required";
     }
     errorIsDefault = false;
   }
@@ -229,7 +234,7 @@ async function fetchQuotaWithDependencies(
   }
   const piCandidates: CredentialCandidate<CodexAttemptCredential>[] = [];
   if (piResolution.status === "available") {
-    credentialFound = true;
+    evidence = strongerEvidence(evidence, "tested");
     piCandidates.push({
       source: PI_CODEX_CREDENTIAL_SOURCE,
       localState: "valid",
@@ -242,7 +247,7 @@ async function fetchQuotaWithDependencies(
     piResolution.status === "expired" &&
     piResolution.credentials !== undefined
   ) {
-    credentialFound = true;
+    evidence = strongerEvidence(evidence, "tested");
     piCandidates.push({
       source: PI_CODEX_CREDENTIAL_SOURCE,
       localState: "expired",
@@ -254,7 +259,8 @@ async function fetchQuotaWithDependencies(
     });
   } else {
     const piAttempt = piSourceAttempt(piResolution);
-    if (piAttempt.credentialPresent) credentialFound = true;
+    if (piAttempt.credentialPresent)
+      evidence = strongerEvidence(evidence, "unusable");
     attempts.push(piAttempt);
     if (
       piResolution.status === "error" &&
@@ -333,7 +339,7 @@ async function fetchQuotaWithDependencies(
     undefined,
     attempts,
     undefined,
-    credentialFound,
+    evidence,
   );
 }
 
@@ -413,16 +419,17 @@ function codexSuccessReport(
 }
 
 /**
- * `credentialFound` defaults to true so a caller that does not track it can
- * never publish the `no_local_credential` claim by omission: the claim is only
- * made where the run actually established that no store held a credential.
+ * `evidence` defaults to `tested` so a caller that does not track it can never
+ * publish a reach claim by omission: `no_local_credential` and
+ * `local_credential_unusable` are only reported where the run actually
+ * established that no store held a credential, or that none held a usable one.
  */
 function codexFailureReport(
   error: string,
   retryAfter: string | undefined,
   attempts: SourceAttempt[],
   source?: ProviderQuota["source"],
-  credentialFound = true,
+  evidence: LocalCredentialEvidence = "tested",
 ): ProviderQuota {
   const cached = readCachedProvider("codex");
   if (cached) {
@@ -436,7 +443,7 @@ function codexFailureReport(
     status,
     error,
     retryAfter,
-    reason: noLocalCredentialReason(status, credentialFound),
+    reason: localCredentialReason(status, evidence),
     sourcesTried: sourceNames(attempts),
     attempts,
   });

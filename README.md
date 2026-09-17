@@ -431,7 +431,7 @@ When Grok Build OAuth, Pi `xai` OAuth, or a Pi `xai` API key establishes model u
 
 A provider with more than one credential source consults them in its fixed declared order and reports the one that works, so a broken store never speaks for a provider whose sibling store still answers. A store's own expiry field is advisory within that source, never a verdict or a reason to reorder sources: a stored-expired credential is still probed in its source's declared position because only the provider's own endpoint can establish that a credential is dead. The superseded source is not discarded: `state.degradedSources` names it on the fresh reading, and default TOON emits a `degraded_source` attention row for it. Pi auth readers reserve `missing` for an absent file or provider property; malformed stores and present non-object or structurally invalid entries are `invalid`. Handover is limited to credential problems - a transport, decoding, or server failure is about the request rather than the credential, so it is reported as-is instead of being retried on a second credential. When no source works the provider still reports its auth problem, and a source that only failed transiently outranks a definitive rejection so a rejected credential is never reported as a sign-out while a sibling's outage is unresolved.
 
-`auth_required` says a credential is needed, never that the account is signed out, and `state.reason` separates the two. `no_local_credential` means no store quota-axi reads held a credential to test: that is a fact about where quota-axi looked, not evidence about the account, which may be answering live quota to whoever holds its credential elsewhere. Its absence means a credential was found and a first-party endpoint refused it - the only evidence that earns a sign-out. Read the two apart in TOON as well: the `attention[]` detail carries `reason no_local_credential`. A store that held a credential quota-axi could not use is not "no credential": a malformed Codex `auth.json` or a Z.AI entry whose key is unusable reports `auth_required` without the reason. `--tui` renders the distinction as `no credential` rather than `signed out`, and counts those providers separately in its header. Codex and Z.AI publish the reason today; the remaining adapters still report an empty-handed read as a sign-out and are being routed through the same helper.
+`auth_required` says a credential is needed, never that the account is signed out, and `state.reason` separates three states that lead to three different actions. `no_local_credential` means no store quota-axi reads held a credential to test: that is a fact about where quota-axi looked, not evidence about the account, which may be answering live quota to whoever holds its credential elsewhere - look elsewhere. `local_credential_unusable` means a store did hold a credential but not in a shape the adapter can send - a malformed Codex `auth.json`, a Z.AI entry whose key is unusable - so no endpoint ever examined it: fix the stored credential. No reason at all means a credential was found and a first-party endpoint refused it - the only evidence that earns a sign-out, and the only one that calls for a new sign-in. Read them apart in TOON as well: the `attention[]` detail carries `reason no_local_credential` or `reason local_credential_unusable`. `--tui` renders them as `no credential` and `credential unusable` rather than `signed out`, and counts those providers separately in its header instead of as signed out. Codex and Z.AI publish the reasons today; the remaining adapters still report an empty-handed read as a sign-out and are being routed through the same helper.
 
 Claude credential failures without a usable access token preserve the precise `credentials_missing` or `credentials_invalid` error. A usage response with HTTP 401 reports `Claude sign-in required` only when it definitively establishes account authentication failure; the [Claude provider notes](#provider-notes) own the withheld-Keychain exception and cache effects. HTTP 403 is not sufficient authentication evidence because network policy and WAF denials use it too; it stays unavailable or stale rather than claiming sign-out.
 
@@ -556,21 +556,21 @@ Any bounding window without usable pace makes the **whole scope** unmeasurable: 
 
 ### Quota enums
 
-| Name                             | Values                                                                                 |
-| -------------------------------- | -------------------------------------------------------------------------------------- |
-| Provider statuses                | `fresh`, `stale`, `unavailable`, `auth_required`, `rate_limited`, or `error`           |
-| Provider sources                 | `oauth`, `pi:openai-codex`, `cli-rpc`, `cli`, `api`, `web`, `cache`, or `unavailable`  |
-| Current provider adapter sources | `oauth`, `pi:openai-codex`, `cli-rpc`, `cli`, `api`, `web`, `cache`, and `unavailable` |
-| Window kinds                     | `session`, `weekly`, `monthly`, `model`, `credits`, or `unknown`                       |
-| Window pace statuses             | `ahead`, `on_pace`, `behind`, or `unknown`                                             |
-| Effective pace statuses          | `ahead`, `on_pace`, `behind`, `mixed`, or `unknown`                                    |
-| Effective runway statuses        | `exhausted_now`, `projected_exhaustion`, `through_reset`, or `unknown`                 |
-| Effective selection statuses     | `known` or `unknown`                                                                   |
-| Pace projection confidence       | `early` or `established`                                                               |
-| Pace cycle basis                 | `starts_at_resets_at` or `window_seconds`                                              |
-| Quota relationship statuses      | `known`, `partial`, or `unknown`                                                       |
-| Source attempt statuses          | `success`, `failed`, or `skipped`                                                      |
-| Provider state reasons           | `keychain_access_required`, `credentials_expired`, or `no_local_credential`            |
+| Name                             | Values                                                                                                   |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| Provider statuses                | `fresh`, `stale`, `unavailable`, `auth_required`, `rate_limited`, or `error`                             |
+| Provider sources                 | `oauth`, `pi:openai-codex`, `cli-rpc`, `cli`, `api`, `web`, `cache`, or `unavailable`                    |
+| Current provider adapter sources | `oauth`, `pi:openai-codex`, `cli-rpc`, `cli`, `api`, `web`, `cache`, and `unavailable`                   |
+| Window kinds                     | `session`, `weekly`, `monthly`, `model`, `credits`, or `unknown`                                         |
+| Window pace statuses             | `ahead`, `on_pace`, `behind`, or `unknown`                                                               |
+| Effective pace statuses          | `ahead`, `on_pace`, `behind`, `mixed`, or `unknown`                                                      |
+| Effective runway statuses        | `exhausted_now`, `projected_exhaustion`, `through_reset`, or `unknown`                                   |
+| Effective selection statuses     | `known` or `unknown`                                                                                     |
+| Pace projection confidence       | `early` or `established`                                                                                 |
+| Pace cycle basis                 | `starts_at_resets_at` or `window_seconds`                                                                |
+| Quota relationship statuses      | `known`, `partial`, or `unknown`                                                                         |
+| Source attempt statuses          | `success`, `failed`, or `skipped`                                                                        |
+| Provider state reasons           | `keychain_access_required`, `credentials_expired`, `no_local_credential`, or `local_credential_unusable` |
 
 Source attempts can include `credentialPresent` when a source is not genuinely absent, including when a read failure prevents a more precise classification. They can include `degraded: false` when a non-success attempt is not a broken credential source; otherwise fresh reports derive `state.degradedSources` from failed attempts and skipped attempts with `credentialPresent`.
 

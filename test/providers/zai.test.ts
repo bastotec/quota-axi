@@ -778,7 +778,7 @@ describe("Z.AI credential discovery", () => {
     });
   });
 
-  it("makes no request and retires cache for missing credentials", async () => {
+  it("makes no request and keeps the cached snapshot for missing credentials", async () => {
     const request = vi.fn();
     const remove = vi.fn();
     const report = await testAdapter({
@@ -789,7 +789,10 @@ describe("Z.AI credential discovery", () => {
     }).fetchQuota(OPTIONS);
 
     expect(request).not.toHaveBeenCalled();
-    expect(remove).toHaveBeenCalledWith("zai");
+    // Finding no credential is the absence of evidence, not an auth verdict:
+    // retiring the last good snapshot on it would leave a later run that can
+    // read the store, but not the endpoint, with no stale reading at all.
+    expect(remove).not.toHaveBeenCalled();
     expect(report.state).toMatchObject({
       status: "auth_required",
       stale: false,
@@ -800,17 +803,41 @@ describe("Z.AI credential discovery", () => {
     expect(report.windows).toEqual([]);
   });
 
-  it("does not claim no local credential when the store held an unusable key", async () => {
+  it("reports an unusable stored key as unusable rather than absent", async () => {
+    const remove = vi.fn();
     const report = await testAdapter({
       credentialSource: credentialSource(
         extractZaiCredential({ zai: { key: "   " } }, PATH),
       ),
       fetch: vi.fn(),
+      deleteCachedProvider: remove,
       readCachedProvider: () => undefined,
     }).fetchQuota(OPTIONS);
 
     expect(report.state.status).toBe("auth_required");
-    expect(report.state.reason).toBeUndefined();
+    expect(report.state.reason).toBe("local_credential_unusable");
+    // A store that held a key is a credential quota-axi read, so its snapshot
+    // is retired.
+    expect(remove).toHaveBeenCalledWith("zai");
+    expect(report.attempts).toContainEqual(
+      expect.objectContaining({
+        source: "opencode:auth.json",
+        status: "skipped",
+        credentialPresent: true,
+      }),
+    );
+  });
+
+  it("leaves a genuinely absent store unmarked in its attempt", async () => {
+    const report = await testAdapter({
+      credentialSource: credentialSource({ status: "missing", path: PATH }),
+      fetch: vi.fn(),
+      readCachedProvider: () => undefined,
+    }).fetchQuota(OPTIONS);
+
+    for (const attempt of report.attempts ?? []) {
+      expect(attempt.credentialPresent).toBeUndefined();
+    }
   });
 
   it("does not claim no local credential when the store could not be parsed", async () => {

@@ -218,7 +218,7 @@ describe("credential source contract", { timeout: 30_000 }, () => {
   });
 
   /**
-   * Routed through `noLocalCredentialReason` so far. The remaining adapters
+   * Routed through `localCredentialReason` so far. The remaining adapters
    * still report their empty-handed reads as a sign-out; they owe this reason
    * too, and the invariant above already stops any of them claiming it wrongly.
    */
@@ -233,4 +233,51 @@ describe("credential source contract", { timeout: 30_000 }, () => {
       expect(result.state.error ?? "").not.toMatch(/sign-in|signed out/i);
     });
   });
+
+  /**
+   * The third state: a store did hold a credential, but in a shape no endpoint
+   * could be shown. That is a stored-credential problem to fix, and it is
+   * neither of the other two - not "quota-axi found none" and not a sign-out.
+   */
+  const UNUSABLE_STORES: Array<[provider: string, write: () => void]> = [
+    [
+      "codex",
+      () =>
+        writeFileSync(
+          join(process.env.CODEX_HOME!, "auth.json"),
+          JSON.stringify({ tokens: { access_token: 42 } }),
+          { mode: 0o600 },
+        ),
+    ],
+    [
+      "zai",
+      () => {
+        const dir = join(process.env.XDG_DATA_HOME!, "opencode");
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(
+          join(dir, "auth.json"),
+          JSON.stringify({ "zai-coding-plan": { type: "api", key: "   " } }),
+          { mode: 0o600 },
+        );
+      },
+    ],
+  ];
+
+  describe.each(UNUSABLE_STORES)(
+    "%s with a store holding an unusable credential",
+    (provider, write) => {
+      it("reports the stored credential as unusable, not as absence or a sign-out", async () => {
+        write();
+        const api = stubRejectingApi();
+
+        const result = await readQuota(provider);
+
+        // Nothing sendable was found, so no endpoint was asked and no verdict
+        // about the account exists to report.
+        expect(api.bearers).toEqual([]);
+        expect(result.state.status).toBe("auth_required");
+        expect(result.state.reason).toBe("local_credential_unusable");
+      });
+    },
+  );
 });

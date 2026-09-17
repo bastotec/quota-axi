@@ -102,6 +102,27 @@ describe("renderQuotaTui structure", () => {
     expect(findCardLine(lines, 1, "no credential in the stores")).toBeDefined();
   });
 
+  it("does not count a provider whose stored credential is unusable as signed out", () => {
+    const response = fixtureResponse();
+    const unusable = response.providers.find(
+      (provider) => provider.provider === "cursor",
+    )!;
+    unusable.state = { ...unusable.state, reason: "local_credential_unusable" };
+    const lines = renderQuotaTui(response, {
+      timeZone: "America/Los_Angeles",
+    }).split("\n");
+
+    expect(lines[0]).toBe(
+      "  quota-axi · 2026-08-06 16:21 PDT · 3 live · 2 signed out · 1 credential unusable",
+    );
+    const title = findLine(lines, "○ cursor");
+    expect(title).toContain("credential unusable");
+    expect(title).not.toContain("signed out");
+    expect(
+      findCardLine(lines, 1, "stored credential is not usable"),
+    ).toBeDefined();
+  });
+
   it("zips live provider cards two-up with live providers first", () => {
     const lines = render();
     const title = findLine(lines, "● claude");

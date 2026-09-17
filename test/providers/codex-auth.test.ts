@@ -1054,6 +1054,25 @@ describe("Codex credential-state reporting", () => {
     expect(result.state.error).not.toMatch(/sign-in/i);
   });
 
+  it("reports an unusable stored credential as unusable, not as a sign-out", async () => {
+    // The store held a credential, so quota-axi did not come up empty-handed -
+    // but it is not in a shape any endpoint could be shown, so no verdict
+    // about the account exists either.
+    writeAuth({ tokens: { access_token: 42 } });
+    const fetchMock = vi.fn(async () => new Response(null, { status: 401 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { fetchQuota } = await import("../../src/providers/codex.js");
+    const result = await fetchQuota({
+      allowKeychainPrompt: false,
+      refreshCredentials: false,
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.state.status).toBe("auth_required");
+    expect(result.state.reason).toBe("local_credential_unusable");
+  });
+
   it("reports a sign-out only for a credential the endpoint refused", async () => {
     const nativeToken = jwt({ exp: Math.floor(Date.now() / 1000) + 3600 });
     writeAuth({ tokens: { access_token: nativeToken } });
@@ -1070,23 +1089,6 @@ describe("Codex credential-state reporting", () => {
 
     expect(result.state.status).toBe("auth_required");
     expect(result.state.error).toBe("Codex sign-in required");
-    expect(result.state.reason).toBeUndefined();
-  });
-
-  it("does not claim no local credential when a store holds an unusable one", async () => {
-    writeAuth({ tokens: { access_token: 42 } });
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response(null, { status: 401 })),
-    );
-
-    const { fetchQuota } = await import("../../src/providers/codex.js");
-    const result = await fetchQuota({
-      allowKeychainPrompt: false,
-      refreshCredentials: false,
-    });
-
-    expect(result.state.status).toBe("auth_required");
     expect(result.state.reason).toBeUndefined();
   });
 
