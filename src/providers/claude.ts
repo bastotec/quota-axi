@@ -17,6 +17,8 @@ import { clampPercent, nowIso, retryAfterToIso } from "../lib/time.js";
 import type {
   AuthProviderReport,
   AuthSourceReport,
+  LiveModelCatalog,
+  LiveModelRecord,
   ProviderAdapter,
   ProviderOptions,
   ProviderQuota,
@@ -42,6 +44,14 @@ import { withUsageFetchFailure } from "./usage-fetch-failure.js";
 
 const API_URL = "https://api.anthropic.com/api/oauth/usage";
 const PROFILE_API_URL = "https://api.anthropic.com/api/oauth/profile";
+/**
+ * Anthropic's own model listing. It is a read-only GET that enumerates the
+ * models this account may use: it starts no session, sends no model request,
+ * and spends none of the quota being measured, so it is safe on the same
+ * never-spend footing as the usage probe.
+ */
+const MODELS_API_URL = "https://api.anthropic.com/v1/models?limit=100";
+const MODELS_API_VERSION = "2023-06-01";
 const OAUTH_BETA = "oauth-2025-04-20";
 const CLAUDE_CODE_USER_AGENT = "claude-code/2.1.202";
 const API_TIMEOUT_MS = 15_000;
@@ -140,6 +150,7 @@ export const claudeAdapter: ProviderAdapter = {
   label: "Claude",
   fetchQuota,
   inspectAuth,
+  fetchModelCatalog,
 };
 
 /**
@@ -1219,4 +1230,100 @@ class ClaudeFailure extends Error {
     this.usageFetchFailure = true;
     return this;
   }
+}
+
+/**
+ * Read Anthropic's own current model lineup.
+ *
+ * This is the vendor naming its models, which is the only thing that can carry
+ * model identity: quota-axi's built-in catalog is editorial and goes stale
+ * silently. Every outcome other than a listing the vendor actually returned is
+ * `unavailable` with a reason, so the join discloses the gap rather than
+ * passing off the built-in lineup as Anthropic's answer.
+ *
+ * It reuses the quota path's stored credentials read-only and never refreshes:
+ * a model listing is not worth spending a single-use refresh-token exchange on,
+ * and the quota read in the same run already owns that decision.
+ */
+export async function fetchModelCatalog(
+  options: ProviderOptions,
+): Promise<LiveModelCatalog> {
+  const states = await readCredentialStates(options);
+  const candidates = states.filter(
+    (state) => state.status === "available" || state.status === "expired",
+  );
+  if (candidates.length === 0) {
+    return {
+      provider: "claude",
+      status: "unavailable",
+      reason: "no_credential",
+    };
+  }
+
+  let reason = "catalog_unavailable";
+  for (const state of candidates) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+    try {
+      const response = await providerFetch(MODELS_API_URL, {
+        headers: {
+          authorization: `Bearer ${state.credentials.accessToken}`,
+          "anthropic-beta": OAUTH_BETA,
+          "anthropic-version": MODELS_API_VERSION,
+          "User-Agent": CLAUDE_CODE_USER_AGENT,
+          accept: "application/json",
+        },
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        reason = `catalog_http_${response.status}`;
+        continue;
+      }
+      const models = normalizeClaudeModelCatalog(await response.json());
+      if (models.length === 0) {
+        reason = "catalog_unrecognized";
+        continue;
+      }
+      return {
+        provider: "claude",
+        status: "live",
+        fetchedAt: nowIso(),
+        models,
+      };
+    } catch (error) {
+      reason =
+        error instanceof Error && error.name === "AbortError"
+          ? "catalog_timeout"
+          : "catalog_unreachable";
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return { provider: "claude", status: "unavailable", reason };
+}
+
+/** Accept only records that carry the vendor's own id; never invent a label. */
+export function normalizeClaudeModelCatalog(
+  payload: unknown,
+): LiveModelRecord[] {
+  if (!payload || typeof payload !== "object") return [];
+  const data = (payload as { data?: unknown }).data;
+  if (!Array.isArray(data)) return [];
+  const models: LiveModelRecord[] = [];
+  for (const record of data) {
+    if (!record || typeof record !== "object") continue;
+    const { id, display_name: displayName } = record as {
+      id?: unknown;
+      display_name?: unknown;
+    };
+    if (typeof id !== "string" || !id.trim()) continue;
+    models.push({
+      id,
+      label:
+        typeof displayName === "string" && displayName.trim()
+          ? displayName
+          : id,
+    });
+  }
+  return models;
 }

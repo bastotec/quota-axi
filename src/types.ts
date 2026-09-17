@@ -319,7 +319,36 @@ export type ProviderAdapter = {
   label: string;
   fetchQuota(options: ProviderOptions): Promise<ProviderQuota>;
   inspectAuth(options: ProviderOptions): Promise<AuthProviderReport>;
+  /**
+   * Reads the vendor's own current model lineup from a first-party, read-only,
+   * no-spend listing endpoint. Only adapters with an empirically verified
+   * endpoint implement this; every other provider is reported as having no
+   * live catalog rather than having its built-in lineup passed off as one.
+   */
+  fetchModelCatalog?(options: ProviderOptions): Promise<LiveModelCatalog>;
 };
+
+/** One model exactly as the vendor's live catalog names it right now. */
+export type LiveModelRecord = {
+  /** The vendor's own model identifier. */
+  id: string;
+  /** The vendor's own display name. */
+  label: string;
+};
+
+/**
+ * The result of reading a provider's live model lineup. `unavailable` is a
+ * first-class outcome: the join discloses it rather than substituting the
+ * built-in editorial catalog as if it were the vendor's answer.
+ */
+export type LiveModelCatalog =
+  | {
+      provider: ProviderId;
+      status: "live";
+      fetchedAt: string;
+      models: LiveModelRecord[];
+    }
+  | { provider: ProviderId; status: "unavailable"; reason: string };
 
 export type AuthSourceReport = {
   source: string;
@@ -337,7 +366,11 @@ export type AuthProviderReport = {
 /** A coarse editorial classification relative to the current model frontier. */
 export type IntelligenceBucket = "high" | "medium" | "low";
 
-/** Native-provider model knowledge used by the `models` evidence join. */
+/**
+ * Editorial intelligence buckets used by the `models` join. This is never the
+ * vendor's model lineup: a row's identity comes from the provider's live
+ * catalog, and these entries only contribute a reviewed intelligence bucket.
+ */
 export type ModelCatalogEntry = {
   provider: "claude" | "codex" | "grok" | "kimi";
   id: string;
@@ -366,12 +399,34 @@ export type ModelQuotaRecord = {
   provider: ModelCatalogEntry["provider"];
   id: string;
   label: string;
-  intelligence: IntelligenceBucket;
+  /**
+   * Where this row's model identity came from. `live_catalog` means the vendor
+   * named this model itself on this run; `unverified_builtin` means the live
+   * catalog could not be read and the row restates quota-axi's own built-in
+   * lineup, which carries no vendor authority.
+   */
+  identitySource: ModelIdentitySource;
+  /** Omitted when no reviewed bucket covers this model. Never inferred. */
+  intelligence?: IntelligenceBucket;
   /** The effective availability scope used as evidence for this row. */
   quotaScopes: string[];
   /** Omitted when quota relationships are unavailable or unknown. */
   effective?: EffectiveAvailability;
   state: ProviderStateSummary;
+};
+
+export type ModelIdentitySource = "live_catalog" | "unverified_builtin";
+
+/** Per-provider disclosure of whether the live model lineup was actually read. */
+export type ModelCatalogSourceReport = {
+  provider: ProviderId;
+  status: LiveModelCatalog["status"];
+  /** Why the live lineup is missing. Present only when unavailable. */
+  reason?: string;
+  /** When the live lineup was read. Present only when live. */
+  fetchedAt?: string;
+  /** How many models the live lineup named. Present only when live. */
+  modelCount?: number;
 };
 
 export type ModelReference = Pick<ModelQuotaRecord, "provider" | "id">;
@@ -387,11 +442,19 @@ export type ModelSortResult = {
 
 export type ModelsResponse = {
   generatedAt: string;
-  schemaVersion: 1;
-  catalog: Pick<ModelCatalog, "version" | "provenance">;
+  schemaVersion: 2;
+  /**
+   * Provenance of the editorial intelligence buckets only. It describes what
+   * quota-axi reviewed, never which models the vendor currently offers.
+   */
+  intelligenceCatalog: Pick<ModelCatalog, "version" | "provenance">;
+  /** Whether each reported provider's live lineup was read, and why not. */
+  catalogSources: ModelCatalogSourceReport[];
   models: ModelQuotaRecord[];
-  /** Provider/model window scopes with no corresponding catalog entry. */
+  /** Model window scopes that matched no model in the lineup used. */
   unmatchedWindowIds?: string[];
+  /** Providers whose rows carry no live-catalog backing for their identity. */
+  unverifiedIdentityProviders?: ProviderId[];
   /** Present only when an explicit comparator was requested. */
   sort?: ModelSortResult;
 };

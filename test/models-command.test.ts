@@ -23,6 +23,8 @@ afterEach(() => {
 
 describe("models command", () => {
   it("emits filtered JSON model evidence and compact TOON", async () => {
+    // This adapter exposes no live catalog, so every row here is explicitly the
+    // disclosed `unverified_builtin` fallback rather than a vendor lineup.
     PROVIDERS.claude = adapter({
       provider: "claude",
       label: "Claude",
@@ -50,14 +52,25 @@ describe("models command", () => {
       ]),
     );
     expect(json).toMatchObject({
-      schemaVersion: 1,
-      catalog: { version: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/) },
+      schemaVersion: 2,
+      intelligenceCatalog: {
+        version: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+      },
+      catalogSources: [
+        {
+          provider: "claude",
+          status: "unavailable",
+          reason: "no_live_catalog_source",
+        },
+      ],
+      unverifiedIdentityProviders: ["claude"],
     });
     expect(json.models).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           provider: "claude",
           id: "claude-opus-4-5",
+          identitySource: "unverified_builtin",
           intelligence: "high",
           quotaScopes: ["model:fable"],
           state: { status: "fresh", stale: false },
@@ -89,6 +102,120 @@ describe("models command", () => {
     expect(toon).toContain(
       "Default model order is deterministic and non-preferential",
     );
+  });
+
+  /**
+   * Regression: the built-in catalog pinned Claude's `model:fable` window to
+   * `claude-opus-4-5`, so the join told readers a Fable-scoped window belonged
+   * to Opus. Identity now comes from the vendor's own lineup, which names Fable
+   * and Opus as different models.
+   */
+  it("attributes a model window using the provider's live catalog, not the built-in lineup", async () => {
+    PROVIDERS.claude = liveCatalogAdapter(fableQuota(), [
+      { id: "claude-fable-5-1", label: "Claude Fable 5.1" },
+      { id: "claude-opus-4-5-20251101", label: "Claude Opus 4.5" },
+    ]);
+
+    const json = JSON.parse(
+      await capture(["models", "--provider", "claude", "--json"]),
+    );
+
+    const fable = json.models.find(
+      (model: { id: string }) => model.id === "claude-fable-5-1",
+    );
+    expect(fable).toMatchObject({
+      identitySource: "live_catalog",
+      quotaScopes: ["model:fable"],
+    });
+
+    const opus = json.models.find(
+      (model: { id: string }) => model.id === "claude-opus-4-5-20251101",
+    );
+    expect(opus.quotaScopes).not.toContain("model:fable");
+
+    // The stale built-in id is not a model the vendor listed, so it is gone.
+    expect(
+      json.models.some(
+        (model: { id: string }) => model.id === "claude-opus-4-5",
+      ),
+    ).toBe(false);
+    expect(json.unverifiedIdentityProviders).toBeUndefined();
+    expect(json.catalogSources).toEqual([
+      {
+        provider: "claude",
+        status: "live",
+        fetchedAt: "2026-09-17T12:00:00.000Z",
+        modelCount: 2,
+      },
+    ]);
+  });
+
+  it("never invents an intelligence bucket for a model the catalog has not reviewed", async () => {
+    PROVIDERS.claude = liveCatalogAdapter(fableQuota(), [
+      { id: "claude-fable-5-1", label: "Claude Fable 5.1" },
+      // The built-in catalog knows `claude-sonnet-4-5`; the vendor ships it
+      // under a dated id, which is the same model and keeps its bucket.
+      { id: "claude-sonnet-4-5-20250929", label: "Claude Sonnet 4.5" },
+    ]);
+
+    const json = JSON.parse(
+      await capture(["models", "--provider", "claude", "--json"]),
+    );
+    const byId = new Map(
+      json.models.map((model: { id: string }) => [model.id, model]),
+    );
+    expect(byId.get("claude-fable-5-1").intelligence).toBeUndefined();
+    expect(byId.get("claude-sonnet-4-5-20250929").intelligence).toBe("high");
+  });
+
+  it("discloses an unreadable live catalog in both TOON and JSON", async () => {
+    PROVIDERS.claude = {
+      ...adapter(fableQuota()),
+      async fetchModelCatalog() {
+        return {
+          provider: "claude" as const,
+          status: "unavailable" as const,
+          reason: "catalog_http_503",
+        };
+      },
+    };
+
+    const json = JSON.parse(
+      await capture(["models", "--provider", "claude", "--json"]),
+    );
+    expect(json.catalogSources).toEqual([
+      { provider: "claude", status: "unavailable", reason: "catalog_http_503" },
+    ]);
+    expect(json.unverifiedIdentityProviders).toEqual(["claude"]);
+    for (const model of json.models) {
+      expect(model.identitySource).toBe("unverified_builtin");
+    }
+
+    const toon = await capture(["models", "--provider", "claude"]);
+    expect(toon).toContain("catalog_http_503");
+    expect(toon).toContain("unverifiedIdentityProviders[1]: claude");
+    expect(toon).toMatch(/claude-opus-4-5,[^\n]*,unverified,/);
+  });
+
+  it("falls back to disclosure when the live catalog read throws", async () => {
+    PROVIDERS.claude = {
+      ...adapter(fableQuota()),
+      async fetchModelCatalog(): Promise<never> {
+        throw new Error("socket hang up");
+      },
+    };
+
+    const json = JSON.parse(
+      await capture(["models", "--provider", "claude", "--json"]),
+    );
+    expect(json.catalogSources).toEqual([
+      {
+        provider: "claude",
+        status: "unavailable",
+        reason: "catalog_unreachable",
+      },
+    ]);
+    expect(json.unverifiedIdentityProviders).toEqual(["claude"]);
   });
 
   it("rejects unsupported model filters and comparators as usage errors", async () => {
@@ -197,5 +324,41 @@ function failedQuota(
       stale: false,
       sourcesTried: ["unavailable"],
     },
+  };
+}
+
+function liveCatalogAdapter(
+  quota: ProviderQuota,
+  models: { id: string; label: string }[],
+): ProviderAdapter {
+  return {
+    ...adapter(quota),
+    async fetchModelCatalog() {
+      return {
+        provider: quota.provider,
+        status: "live" as const,
+        fetchedAt: "2026-09-17T12:00:00.000Z",
+        models,
+      };
+    },
+  };
+}
+
+/** A Claude reading whose only model-scoped window is the Fable weekly one. */
+function fableQuota(): ProviderQuota {
+  return {
+    provider: "claude",
+    label: "Claude",
+    source: "oauth",
+    windows: [
+      {
+        id: "model:fable",
+        label: "Fable week",
+        kind: "model",
+        percentUsed: 20,
+        percentRemaining: 80,
+      },
+    ],
+    state: { status: "fresh", stale: false, sourcesTried: ["oauth"] },
   };
 }

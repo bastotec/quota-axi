@@ -291,13 +291,13 @@ It is generated from `src/skill.ts`; update it with `pnpm run build:skill` and v
 
 ## CLI Reference
 
-| Command          | Description                                          |
-| ---------------- | ---------------------------------------------------- |
-| `quota-axi`      | Report supported local quota windows                 |
-| `auth`           | Report local auth-source availability, no values     |
-| `models`         | Join curated model buckets with local quota evidence |
-| `update`         | Upgrade quota-axi to the latest published version    |
-| `update --check` | Report current vs. latest without installing         |
+| Command          | Description                                                       |
+| ---------------- | ----------------------------------------------------------------- |
+| `quota-axi`      | Report supported local quota windows                              |
+| `auth`           | Report local auth-source availability, no values                  |
+| `models`         | Join each provider's live model catalog with local quota evidence |
+| `update`         | Upgrade quota-axi to the latest published version                 |
+| `update --check` | Report current vs. latest without installing                      |
 
 ### Flags
 
@@ -341,7 +341,7 @@ The `quota` command's `--json` emits `schemaVersion: 5`.
 
 The package publishes TypeScript declarations from its package root, so consumers can use `import type { QuotaAxiResponse, ModelsResponse } from "quota-axi"`. The adapter contract is `ProviderAdapter` in and normalized `ProviderQuota` out: adapters report observed quota data, never rank, mint credentials, or retain raw responses. The narrowly bounded vendor-owned renewal path is documented under [Delegated credential refresh](#delegated-credential-refresh).
 
-`schemaVersion` is command-specific. Additive optional fields do not bump it. A semantic or incompatible shape change does. The `quota` report is version 5, `auth` is version 1, and `models` is version 1.
+`schemaVersion` is command-specific. Additive optional fields do not bump it. A semantic or incompatible shape change does. The `quota` report is version 5, `auth` is version 1, and `models` is version 2.
 
 ### Default report blocks
 
@@ -590,11 +590,27 @@ Source attempts can include `credentialPresent` when a source is not genuinely a
 
 ### Model catalog and `models`
 
-`quota-axi models [--intelligence high|medium|low] [--sort runway] [--provider ...] [--json|--full]` joins a reviewed catalog of native Claude, Codex, Grok, and Kimi models to the provider's effective quota evidence. It queries those four catalog-backed providers by default and accepts only those providers in an explicit models scope. Cursor and Copilot are excluded from this first catalog because their hosted model availability is plan-dependent; Copilot's quota relationships are also currently unknown. Z.AI, Alibaba, OpenCode Go, and Antigravity report quota but have no reviewed catalog entries yet, so they are not `models` providers either.
+`quota-axi models [--intelligence high|medium|low] [--sort runway] [--provider ...] [--json|--full]` joins each provider's own live model catalog with that provider's effective quota evidence. It queries the four catalog-backed providers (Claude, Codex, Grok, Kimi) by default and accepts only those providers in an explicit models scope. Cursor and Copilot are excluded from this first catalog because their hosted model availability is plan-dependent; Copilot's quota relationships are also currently unknown. Z.AI, Alibaba, OpenCode Go, and Antigravity report quota but have no reviewed catalog entries yet, so they are not `models` providers either.
 
-Catalog buckets are coarse editorial classifications relative to the current frontier, not scores. They are curated from public provider material and public leaderboards, including [Artificial Analysis](https://artificialanalysis.ai/) as an informing source. quota-axi does not reproduce Artificial Analysis scores, has no runtime Artificial Analysis dependency, and never commits an Artificial Analysis key. `scripts/refresh-model-kb.ts` is a maintainer-only review aid: it may use a private `AA_API_KEY` to suggest changes, but it never writes the catalog.
+#### Model identity comes from the vendor
 
-Every models response includes `catalog.version` and `catalog.provenance`; callers must treat catalog freshness and unmapped `unmatchedWindowIds` as explicit uncertainty. A model row exposes the applicable effective quota scope and provider state. When no model-specific scope is known, the provider account scope remains the evidence rather than an invented model limit.
+Model identity is the provider's, never quota-axi's. On each run the join reads the vendor's own model listing and reports the models that listing named, and it attributes a model-scoped quota window by matching the vendor's window slug against the vendor's own model identity - so the window Anthropic scopes to `Fable` lands on Anthropic's Fable models and on nothing else. Claude reads `GET https://api.anthropic.com/v1/models`, a read-only listing that starts no session and spends none of the quota being measured. A provider gets a live catalog source only once such a first-party, no-spend listing endpoint is established empirically; Codex, Grok, and Kimi have none yet and report `no_live_catalog_source`.
+
+Every response discloses where each provider's identity came from, in both TOON and `--json`:
+
+| Field                                        | Meaning                                                                                                                                                             |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `catalogSources[].status`                    | `live` when the vendor listed its models on this run, otherwise `unavailable`                                                                                       |
+| `catalogSources[].reason`                    | Why a live lineup is missing (`no_live_catalog_source`, `no_credential`, `catalog_http_<status>`, `catalog_timeout`, `catalog_unreachable`, `catalog_unrecognized`) |
+| `catalogSources[].fetchedAt` / `.modelCount` | When the live lineup was read, and how many models it named                                                                                                         |
+| `models[].identitySource`                    | `live_catalog`, or `unverified_builtin` for a row with no live backing                                                                                              |
+| `unverifiedIdentityProviders[]`              | Providers whose rows carry no live-catalog backing at all                                                                                                           |
+
+When a provider's live catalog cannot be read, quota-axi falls back to its built-in lineup but never presents it as the vendor's answer: those rows are marked `unverified_builtin` (`identity=unverified` in TOON), the provider is named in `unverifiedIdentityProviders`, and `catalogSources[].reason` says why. Treat such rows as possibly out of date, and `unmatchedWindowIds` as a model window the lineup in use did not account for.
+
+Catalog buckets are coarse editorial classifications relative to the current frontier, not scores, and they are the only thing the built-in catalog contributes to a live row. They are curated from public provider material and public leaderboards, including [Artificial Analysis](https://artificialanalysis.ai/) as an informing source. quota-axi does not reproduce Artificial Analysis scores, has no runtime Artificial Analysis dependency, and never commits an Artificial Analysis key. `scripts/refresh-model-kb.ts` is a maintainer-only review aid: it may use a private `AA_API_KEY` to suggest changes, but it never writes the catalog.
+
+A bucket is matched onto a live model by the vendor's identity only - exact id, a declared alias, or the same id carrying a vendor date suffix, so `claude-sonnet-4-5` covers `claude-sonnet-4-5-20250929`. A live model the catalog has never reviewed reports no `intelligence` (`unknown` in TOON) instead of inheriting one, and `--intelligence` therefore does not select it. `intelligenceCatalog.version` and `intelligenceCatalog.provenance` describe those reviewed buckets only; they never describe which models a provider currently offers. A model row exposes the applicable effective quota scope and provider state. When no model-specific scope is known, the provider account scope remains the evidence rather than an invented model limit.
 
 Default model order is deterministic and non-preferential: provider, then model ID. `--sort runway` is an explicit, evidence-preserving comparator only: finite `usableRunwaySeconds` descend, then `through_reset`, then `exhausted_now`, with unknown evidence last. Equal evidence appears in `sort.tieGroups`; no hidden score or model, provider, harness, credential, or route recommendation is implied. The comparator registry is intentionally extensible for a future separately sourced `cost` comparator, which is not shipped in v1.
 
@@ -764,6 +780,7 @@ Providers with no established non-interactive rotation command stay read-only on
 ### Safety guarantees
 
 - Quota and auth HTTP requests go only to first-party provider usage, quota, billing, entitlement, or read-only credential-liveness endpoints with the user's local credentials; Antigravity requests stay on 127.0.0.1 loopback.
+- The `models` command additionally reads first-party, read-only model listings for model identity (today only `GET https://api.anthropic.com/v1/models`). A listing enumerates models, starts no session, sends no model request, and spends none of the quota being measured. It is never used to derive quota, and it never triggers a credential refresh.
 - The user-initiated `update` command is the only outbound non-provider network surface, and it is not part of quota measurement.
 - It sends credential values only to the first-party provider request they authenticate.
 - It never prints, logs, or caches credential values.

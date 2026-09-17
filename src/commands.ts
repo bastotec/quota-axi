@@ -23,6 +23,7 @@ import {
 import { scrollHint } from "./tui-viewport.js";
 import type {
   AuthProviderReport,
+  LiveModelCatalog,
   ProviderId,
   ProviderOptions,
   ProviderQuota,
@@ -152,9 +153,13 @@ export async function modelsCommand(
     allowKeychainPrompt: flags.allowKeychainPrompt,
     refreshCredentials: !flags.noCredentialRefresh,
   };
-  const quota = await fetchQuota(flags.providers, options);
+  const [quota, liveCatalogs] = await Promise.all([
+    fetchQuota(flags.providers, options),
+    fetchLiveModelCatalogs(flags.providers, options),
+  ]);
   writeCachedProvidersBestEffort(quota.providers);
   const response = createModelsResponse(quota, {
+    liveCatalogs,
     ...(flags.intelligence ? { intelligence: flags.intelligence } : {}),
     ...(flags.sort ? { sort: flags.sort } : {}),
   });
@@ -212,6 +217,39 @@ export async function fetchQuota(
     generatedAt,
     providers: results,
   });
+}
+
+/**
+ * Read each provider's own live model lineup. A provider with no verified
+ * first-party listing endpoint, or one that fails, resolves as `unavailable`
+ * with a reason so the join can disclose it instead of silently answering from
+ * the built-in catalog.
+ */
+export async function fetchLiveModelCatalogs(
+  providers: ProviderId[],
+  options: ProviderOptions,
+): Promise<LiveModelCatalog[]> {
+  return Promise.all(
+    providers.map(async (provider) => {
+      const adapter = PROVIDERS[provider];
+      if (!adapter.fetchModelCatalog) {
+        return {
+          provider,
+          status: "unavailable" as const,
+          reason: "no_live_catalog_source",
+        };
+      }
+      try {
+        return await adapter.fetchModelCatalog(options);
+      } catch {
+        return {
+          provider,
+          status: "unavailable" as const,
+          reason: "catalog_unreachable",
+        };
+      }
+    }),
+  );
 }
 
 async function inspectAuth(

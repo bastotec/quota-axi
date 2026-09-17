@@ -17,6 +17,7 @@ const model: ModelQuotaRecord = {
   provider: "claude",
   id: "consumer-fixture",
   label: "Consumer fixture",
+  identitySource: "live_catalog",
   intelligence: "high",
   quotaScopes: [],
   state: { status: "fresh", stale: false },
@@ -24,8 +25,19 @@ const model: ModelQuotaRecord = {
 
 const models: ModelsResponse = {
   generatedAt: quota.generatedAt,
-  schemaVersion: 1,
-  catalog: { version: "2026-08-05", provenance: "consumer fixture" },
+  schemaVersion: 2,
+  intelligenceCatalog: {
+    version: "2026-08-05",
+    provenance: "consumer fixture",
+  },
+  catalogSources: [
+    {
+      provider: "claude",
+      status: "live",
+      fetchedAt: quota.generatedAt,
+      modelCount: 1,
+    },
+  ],
   models: [model],
 };
 

@@ -469,7 +469,8 @@ export function renderModelsToon(
     provider: model.provider,
     id: model.id,
     label: model.label,
-    intelligence: model.intelligence,
+    identity: model.identitySource === "live_catalog" ? "live" : "unverified",
+    intelligence: model.intelligence ?? ("unknown" as const),
     quotaScopes: model.quotaScopes.join(" + ") || "unknown",
     status: model.state.status,
     stale: model.state.stale,
@@ -479,17 +480,35 @@ export function renderModelsToon(
     usableRunwaySeconds:
       model.effective?.runway?.usableRunwaySeconds ?? ("unknown" as const),
   }));
+  // Always emitted, including when every lineup is live: an agent reading TOON
+  // must be able to see where each provider's model identity came from without
+  // having to notice the absence of a warning.
+  const catalogSources = response.catalogSources.map((source) => ({
+    provider: source.provider,
+    status: source.status,
+    models: source.modelCount ?? ("unknown" as const),
+    fetchedAt: source.fetchedAt ?? ("unknown" as const),
+    reason: source.reason ?? "none",
+  }));
   const blocks = [
     encode({
       bin: collapseHome(binPath),
       description:
-        "Join curated provider-native model intelligence buckets with local quota evidence",
+        "Join each provider's live model catalog with local quota evidence",
       generatedAt: response.generatedAt,
-      catalogVersion: response.catalog.version,
+      intelligenceCatalogVersion: response.intelligenceCatalog.version,
     }),
+    encode({ catalogSources }),
     encode({ models }),
   ];
   if (response.sort) blocks.push(encode({ sort: response.sort }));
+  if (response.unverifiedIdentityProviders?.length) {
+    blocks.push(
+      encode({
+        unverifiedIdentityProviders: response.unverifiedIdentityProviders,
+      }),
+    );
+  }
   if (response.unmatchedWindowIds?.length) {
     blocks.push(encode({ unmatchedWindowIds: response.unmatchedWindowIds }));
   }
@@ -511,6 +530,8 @@ export function renderModelsToon(
   blocks.push(
     renderHelp([
       "Default model order is deterministic and non-preferential (provider, then id)",
+      "identity=live means the provider named this model itself on this run",
+      "identity=unverified means its live catalog was unreadable; see catalogSources.reason",
       "Run `quota-axi models --sort runway` for the documented opt-in runway comparator",
       "Run `quota-axi models --json` for catalog provenance and full quota evidence",
     ]),
