@@ -729,9 +729,12 @@ describe("Z.AI credential discovery", () => {
   });
 
   it("reports missing when the matching entry has no extractable key", () => {
+    // The store named Z.AI, so the entry is present even with no usable key:
+    // this is not "quota-axi found no credential".
     expect(extractZaiCredential({ zai: { type: "api" } }, PATH)).toEqual({
       status: "missing",
       path: PATH,
+      credentialPresent: true,
     });
   });
 
@@ -745,6 +748,7 @@ describe("Z.AI credential discovery", () => {
     expect(extractZaiCredential(entry, PATH)).toEqual({
       status: "missing",
       path: PATH,
+      credentialPresent: true,
     });
   });
 
@@ -774,7 +778,7 @@ describe("Z.AI credential discovery", () => {
     });
   });
 
-  it("makes no request and retires cache for missing credentials", async () => {
+  it("makes no request and keeps the cached snapshot for missing credentials", async () => {
     const request = vi.fn();
     const remove = vi.fn();
     const report = await testAdapter({
@@ -785,13 +789,90 @@ describe("Z.AI credential discovery", () => {
     }).fetchQuota(OPTIONS);
 
     expect(request).not.toHaveBeenCalled();
-    expect(remove).toHaveBeenCalledWith("zai");
+    // Finding no credential is the absence of evidence, not an auth verdict:
+    // retiring the last good snapshot on it would leave a later run that can
+    // read the store, but not the endpoint, with no stale reading at all.
+    expect(remove).not.toHaveBeenCalled();
     expect(report.state).toMatchObject({
       status: "auth_required",
       stale: false,
       error: "zai_credential_unavailable",
+      // No store held a key, so the report says that and not "signed out".
+      reason: "no_local_credential",
     });
     expect(report.windows).toEqual([]);
+  });
+
+  it("reports an unusable stored key as unusable rather than absent", async () => {
+    const remove = vi.fn();
+    const report = await testAdapter({
+      credentialSource: credentialSource(
+        extractZaiCredential({ zai: { key: "   " } }, PATH),
+      ),
+      fetch: vi.fn(),
+      deleteCachedProvider: remove,
+      readCachedProvider: () => undefined,
+    }).fetchQuota(OPTIONS);
+
+    expect(report.state.status).toBe("auth_required");
+    expect(report.state.reason).toBe("local_credential_unusable");
+    // A store that held a key is a credential quota-axi read, so its snapshot
+    // is retired.
+    expect(remove).toHaveBeenCalledWith("zai");
+    expect(report.attempts).toContainEqual(
+      expect.objectContaining({
+        source: "opencode:auth.json",
+        status: "skipped",
+        credentialPresent: true,
+      }),
+    );
+  });
+
+  it("leaves a genuinely absent store unmarked in its attempt", async () => {
+    const report = await testAdapter({
+      credentialSource: credentialSource({ status: "missing", path: PATH }),
+      fetch: vi.fn(),
+      readCachedProvider: () => undefined,
+    }).fetchQuota(OPTIONS);
+
+    for (const attempt of report.attempts ?? []) {
+      expect(attempt.credentialPresent).toBeUndefined();
+    }
+  });
+
+  it("reports an unparseable store as an unusable credential, not a sign-out", async () => {
+    const report = await testAdapter({
+      credentialSource: credentialSource({
+        status: "invalid",
+        path: PATH,
+        error: "json_parse_error",
+      }),
+      fetch: vi.fn(),
+      readCachedProvider: () => undefined,
+    }).fetchQuota(OPTIONS);
+
+    expect(report.state.status).toBe("auth_required");
+    expect(report.state.reason).toBe("local_credential_unusable");
+    expect(report.attempts).toContainEqual(
+      expect.objectContaining({
+        source: "opencode:auth.json",
+        status: "failed",
+        credentialPresent: true,
+      }),
+    );
+  });
+
+  it("does not claim no local credential when the endpoint refused the key", async () => {
+    const report = await testAdapter({
+      credentialSource: credentialSource(
+        extractZaiCredential({ zai: { key: "usable-looking-key" } }, PATH),
+      ),
+      fetch: vi.fn(async () => new Response(null, { status: 401 })),
+      readCachedProvider: () => undefined,
+    }).fetchQuota(OPTIONS);
+
+    expect(report.state.status).toBe("auth_required");
+    expect(report.state.reason).toBeUndefined();
   });
 
   it("makes no request and retires cache for invalid credentials", async () => {

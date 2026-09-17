@@ -83,6 +83,52 @@ describe("renderQuotaTui structure", () => {
     );
   });
 
+  it("does not count a provider whose credential it never found as signed out", () => {
+    const response = fixtureResponse();
+    const unread = response.providers.find(
+      (provider) => provider.provider === "cursor",
+    )!;
+    unread.state = { ...unread.state, reason: "no_local_credential" };
+    const lines = renderQuotaTui(response, {
+      timeZone: "America/Los_Angeles",
+    }).split("\n");
+
+    expect(lines[0]).toBe(
+      "  quota-axi · 2026-08-06 16:21 PDT · 3 live · 2 signed out · 1 no credential",
+    );
+    const title = findLine(lines, "○ cursor");
+    expect(title).toContain("no credential");
+    expect(title).not.toContain("signed out");
+    expect(findCardLine(lines, 1, "no credential in the stores")).toBeDefined();
+  });
+
+  it("does not count a provider whose stored credential is unusable as signed out", () => {
+    const response = fixtureResponse();
+    const unusable = response.providers.find(
+      (provider) => provider.provider === "cursor",
+    )!;
+    unusable.state = { ...unusable.state, reason: "local_credential_unusable" };
+    const lines = renderQuotaTui(response, {
+      timeZone: "America/Los_Angeles",
+    }).split("\n");
+
+    expect(lines[0]).toBe(
+      "  quota-axi · 2026-08-06 16:21 PDT · 3 live · 2 signed out · 1 no usable credential",
+    );
+    const title = findLine(lines, "○ cursor");
+    expect(title).toContain("no usable credential");
+    expect(title).not.toContain("signed out");
+    // The card states what the store yielded and claims no sign-out remedy:
+    // no endpoint refused anything, so re-authenticating is not the verdict.
+    const card = findCardLine(
+      lines,
+      1,
+      "local store yielded no usable credential",
+    );
+    expect(card).toBeDefined();
+    expect(card).not.toMatch(/sign|auth/i);
+  });
+
   it("zips live provider cards two-up with live providers first", () => {
     const lines = render();
     const title = findLine(lines, "● claude");

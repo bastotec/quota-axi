@@ -17,10 +17,12 @@ import type {
   ProviderAdapter,
   ProviderOptions,
   ProviderQuota,
+  ProviderStateReason,
   ProviderStatus,
   QuotaWindow,
   SourceAttempt,
 } from "../types.js";
+import { localCredentialReason } from "./common.js";
 import { VERSION } from "../version.js";
 
 const ZAI_QUOTA_PATH = "/api/monitor/usage/quota/limit";
@@ -57,7 +59,12 @@ export type NormalizedZaiPayload = {
 
 export type ZaiCredentialResolution =
   | { status: "available"; apiKey: string; host: string; path: string }
-  | { status: "missing"; path: string }
+  /**
+   * No key this adapter can send. `credentialPresent` separates a store that
+   * held a Z.AI entry quota-axi could not use from one that held none at all:
+   * only the latter means quota-axi found no credential to test.
+   */
+  | { status: "missing"; path: string; credentialPresent?: boolean }
   | { status: "invalid"; path: string; error: string }
   | { status: "error"; path: string; error: string };
 
@@ -86,6 +93,7 @@ type ZaiFailureOptions = {
   staleEligible?: boolean;
   definitiveAuth?: boolean;
   retryAfter?: string;
+  reason?: ProviderStateReason;
 };
 
 type ResponseBodyLifetime = {
@@ -109,14 +117,20 @@ export function extractZaiCredential(
 ): ZaiCredentialResolution {
   const data = objectValue(value);
   if (!data) return { status: "invalid", path, error: "json_parse_error" };
+  let credentialPresent = false;
   for (const providerId of [...ZAI_PROVIDER_IDS, ...ZHIPU_PROVIDER_IDS]) {
     const entry = data[providerId];
     if (entry === undefined || entry === null) continue;
+    // The store named this provider, so a credential is here even when its
+    // value is not one this adapter can send.
+    credentialPresent = true;
     const host = ZAI_PROVIDER_IDS.includes(providerId) ? ZAI_HOST : ZHIPU_HOST;
     const key = extractKey(entry);
     if (key) return { status: "available", apiKey: key, host, path };
   }
-  return { status: "missing", path };
+  return credentialPresent
+    ? { status: "missing", path, credentialPresent }
+    : { status: "missing", path };
 }
 
 export function createOpencodeAuthCredentialSource(
@@ -205,6 +219,10 @@ async function acquireZaiQuota(
         source: OPENCODE_AUTH_SOURCE,
         status: resolution.status === "missing" ? "skipped" : "failed",
         error: failure.code,
+        // A store that named Z.AI, or one whose bytes could not be walked to
+        // its entries at all, is not genuinely absent: neither is a credential
+        // this adapter could send, and neither is proof there is none.
+        ...(credentialHeldBy(resolution) ? { credentialPresent: true } : {}),
       };
       return failureReport(failure, attempts, dependencies);
     }
@@ -268,13 +286,35 @@ async function acquireZaiQuota(
   }
 }
 
+/**
+ * Whether the store this resolution read holds a credential quota-axi simply
+ * could not use. A store that named Z.AI qualifies, and so does one whose own
+ * bytes are malformed: nothing about it says the account has no credential.
+ */
+function credentialHeldBy(
+  resolution: Exclude<ZaiCredentialResolution, { status: "available" }>,
+): boolean {
+  if (resolution.status === "missing")
+    return resolution.credentialPresent === true;
+  return resolution.status === "invalid";
+}
+
 function credentialFailureFor(
   resolution: Exclude<ZaiCredentialResolution, { status: "available" }>,
 ): ZaiFailure {
   if (resolution.status === "missing") {
+    // No key this adapter can send. The read still needs one, but nothing here
+    // says the account is signed out - see `localCredentialReason`. Retiring
+    // the cached snapshot is an auth verdict too: finding no credential is the
+    // absence of evidence, so only a store that held one may retire it.
+    const credentialPresent = credentialHeldBy(resolution);
     return new ZaiFailure("zai_credential_unavailable", {
       status: "auth_required",
-      definitiveAuth: true,
+      definitiveAuth: credentialPresent,
+      reason: localCredentialReason(
+        "auth_required",
+        credentialPresent ? "unusable" : "none",
+      ),
     });
   }
   if (resolution.status === "error") {
@@ -285,6 +325,7 @@ function credentialFailureFor(
   return new ZaiFailure("zai_credential_invalid", {
     status: "auth_required",
     definitiveAuth: true,
+    reason: localCredentialReason("auth_required", "unusable"),
   });
 }
 
@@ -329,6 +370,7 @@ function failureReport(
       stale: false,
       error: failure.code,
       ...(failure.retryAfter ? { retryAfter: failure.retryAfter } : {}),
+      ...(failure.reason ? { reason: failure.reason } : {}),
       sourcesTried: attempts.map(({ source }) => source),
     },
     attempts,
@@ -869,6 +911,7 @@ class ZaiFailure extends Error {
   readonly staleEligible: boolean;
   readonly definitiveAuth: boolean;
   readonly retryAfter?: string;
+  readonly reason?: ProviderStateReason;
 
   constructor(code: string, options: ZaiFailureOptions = {}) {
     super(code);
@@ -877,5 +920,6 @@ class ZaiFailure extends Error {
     this.staleEligible = options.staleEligible ?? false;
     this.definitiveAuth = options.definitiveAuth ?? false;
     this.retryAfter = options.retryAfter;
+    this.reason = options.reason;
   }
 }

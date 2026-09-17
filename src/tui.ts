@@ -177,16 +177,28 @@ function isLive(provider: ProviderQuota): boolean {
 
 function headerText(response: QuotaAxiResponse, timeZone?: string): string {
   const live = response.providers.filter(isLive).length;
-  const signedOut = response.providers.filter(
+  const needCredential = response.providers.filter(
     (provider) => provider.state.status === "auth_required",
+  );
+  // A provider whose credential quota-axi never found, or found in a shape no
+  // endpoint ever saw, is not counted as signed out: the header would
+  // otherwise report a verdict on accounts this run never reached.
+  const unread = needCredential.filter(
+    (provider) => provider.state.reason === "no_local_credential",
   ).length;
-  const failed = response.providers.length - live - signedOut;
+  const unusable = needCredential.filter(
+    (provider) => provider.state.reason === "local_credential_unusable",
+  ).length;
+  const signedOut = needCredential.length - unread - unusable;
+  const failed = response.providers.length - live - needCredential.length;
   const parts = [
     "quota-axi",
     formatHeaderTime(response.generatedAt, timeZone),
     `${live} live`,
     `${signedOut} signed out`,
   ];
+  if (unread > 0) parts.push(`${unread} no credential`);
+  if (unusable > 0) parts.push(`${unusable} no usable credential`);
   if (failed > 0) parts.push(`${failed} unavailable`);
   return parts.filter(Boolean).join(" · ");
 }
@@ -359,8 +371,21 @@ function windowsOnlyHeadline(stale: boolean | undefined): Line[] {
 
 function buildFailedCard(provider: ProviderQuota): Card {
   const status = provider.state.status;
+  // "signed out" is a claim about the account, and quota-axi has only earned it
+  // when a credential it read was refused. With nothing to read, or nothing
+  // sendable in what it read, it has established nothing about the account, so
+  // the card says what is true: what its own stores yielded.
+  const noCredential = provider.state.reason === "no_local_credential";
+  const unusableCredential =
+    provider.state.reason === "local_credential_unusable";
   const rightTitle =
-    status === "auth_required" ? "signed out" : humanize(status);
+    status === "auth_required"
+      ? noCredential
+        ? "no credential"
+        : unusableCredential
+          ? "no usable credential"
+          : "signed out"
+      : humanize(status);
   const lines: Line[] = [
     titleLine(
       { text: ` ○ ${provider.provider} `, style: "dimBold" },
@@ -369,9 +394,12 @@ function buildFailedCard(provider: ProviderQuota): Card {
     ),
     interior([], "borderDim"),
   ];
-  const message =
-    humanize(provider.state.error ?? "") ||
-    (status === "auth_required" ? "sign-in required" : humanize(status));
+  const message = noCredential
+    ? "no credential in the stores quota-axi reads"
+    : unusableCredential
+      ? "local store yielded no usable credential"
+      : humanize(provider.state.error ?? "") ||
+        (status === "auth_required" ? "sign-in required" : humanize(status));
   const body: { text: string; style: StyleName }[] = [
     { text: message, style: "dim" },
   ];

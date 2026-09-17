@@ -203,5 +203,88 @@ describe("credential source contract", { timeout: 30_000 }, () => {
       const token = testCase.liveEntry.access as string;
       expect(api.bearers).toContain(`Bearer ${token}`);
     });
+
+    it("never claims no local credential for one the endpoint refused", async () => {
+      // The safety half of the rule, and the one every provider owes: the
+      // claim is about quota-axi's reach, so a credential that was found and
+      // refused can never carry it whatever else the adapter reports.
+      writePiStore({ [testCase.piKey]: testCase.liveEntry });
+      stubRejectingApi();
+
+      const result = await readQuota(testCase.provider);
+
+      expect(result.state.reason).not.toBe("no_local_credential");
+    });
+  });
+
+  /**
+   * Routed through `localCredentialReason` so far. The remaining adapters
+   * still report their empty-handed reads as a sign-out; they owe this reason
+   * too, and the invariant above already stops any of them claiming it wrongly.
+   */
+  describe.each(["codex", "zai"])("%s with no store to read", (provider) => {
+    it("reports that no credential was found, not that the account signed out", async () => {
+      stubRejectingApi();
+
+      const result = await readQuota(provider);
+
+      expect(result.state.status).toBe("auth_required");
+      expect(result.state.reason).toBe("no_local_credential");
+      expect(result.state.error ?? "").not.toMatch(/sign-in|signed out/i);
+    });
+  });
+
+  /**
+   * The third state: a store did hold a credential, but in a shape no endpoint
+   * could be shown. That is a stored-credential problem to fix, and it is
+   * neither of the other two - not "quota-axi found none" and not a sign-out.
+   */
+  const writeCodexAuth = (body: string) =>
+    writeFileSync(join(process.env.CODEX_HOME!, "auth.json"), body, {
+      mode: 0o600,
+    });
+  const writeOpencodeAuth = (body: string) => {
+    const dir = join(process.env.XDG_DATA_HOME!, "opencode");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "auth.json"), body, { mode: 0o600 });
+  };
+
+  const UNUSABLE_STORES: Array<
+    [label: string, provider: string, write: () => void]
+  > = [
+    [
+      "codex entry it cannot send",
+      "codex",
+      () => writeCodexAuth(JSON.stringify({ tokens: { access_token: 42 } })),
+    ],
+    [
+      "codex store it cannot parse",
+      "codex",
+      () => writeCodexAuth("{ not json"),
+    ],
+    [
+      "zai entry it cannot send",
+      "zai",
+      () =>
+        writeOpencodeAuth(
+          JSON.stringify({ "zai-coding-plan": { type: "api", key: "   " } }),
+        ),
+    ],
+    ["zai store it cannot parse", "zai", () => writeOpencodeAuth("{ not json")],
+  ];
+
+  describe.each(UNUSABLE_STORES)("%s", (_label, provider, write) => {
+    it("reports the stored credential as unusable, not as absence or a sign-out", async () => {
+      write();
+      const api = stubRejectingApi();
+
+      const result = await readQuota(provider);
+
+      // Nothing sendable was found, so no endpoint was asked and no verdict
+      // about the account exists to report.
+      expect(api.bearers).toEqual([]);
+      expect(result.state.status).toBe("auth_required");
+      expect(result.state.reason).toBe("local_credential_unusable");
+    });
   });
 });

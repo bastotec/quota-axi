@@ -20,8 +20,11 @@ import type {
   QuotaWindow,
   SourceAttempt,
 } from "../types.js";
+import type { LocalCredentialEvidence } from "./common.js";
 import {
   failedProvider,
+  localCredentialReason,
+  strongerEvidence,
   sourceNames,
   staleFromCache,
   statusFromError,
@@ -41,10 +44,18 @@ import {
   type PiCodexCredentialResolution,
 } from "./pi-codex-credential.js";
 
-const ENDPOINTS = [
-  "https://chatgpt.com/backend-api/wham/usage",
-  "https://chatgpt.com/backend-api/codex/usage",
-];
+/**
+ * `backend-api/codex/usage` used to sit here as a second candidate and is
+ * deliberately gone. It never answered: it returns a Cloudflare bot-management
+ * interstitial (403, `cf-mitigated: challenge`, HTML) identically for a valid
+ * bearer, a different account's bearer, and no credential at all, so the
+ * credential is never examined and no reading can come back. Restoring it
+ * would cost every Codex failure a round-trip that can only ever yield that
+ * challenge - and worse, this loop reads 403 as a rejection, so the one thing
+ * the dead entry can contribute is a WAF challenge dressed as the user's
+ * sign-in verdict.
+ */
+const ENDPOINTS = ["https://chatgpt.com/backend-api/wham/usage"];
 const API_TIMEOUT_MS = 15_000;
 const CLI_TIMEOUT_MS = 15_000;
 const RPC_TIMEOUT_MS = 8_000;
@@ -75,8 +86,14 @@ type AdvisoryExpiredCredentialState = {
   credentials: CodexCredentials;
   source: AuthSourceReport;
 };
+/**
+ * `unreadable` is a store quota-axi could not open at all - permissions, a
+ * directory in its place. It says nothing about what the file holds, so it is
+ * neither an auth verdict nor evidence about a credential, mirroring Z.AI's
+ * `error` resolution.
+ */
 type UnavailableCredentialState = {
-  status: "missing" | "invalid";
+  status: "missing" | "invalid" | "unreadable";
   source: AuthSourceReport;
 };
 type CredentialState =
@@ -150,6 +167,10 @@ async function fetchQuotaWithDependencies(
   // run, and letting an expired Pi entry restate it as an auth problem would
   // make statusFromError advise a sign-in for what is a network outage.
   let errorIsDefault = true;
+  // What this run established about a local credential, strengthening as
+  // sources are read. While it stays `none` the run has established nothing
+  // about the account: see `localCredentialReason`.
+  let evidence: LocalCredentialEvidence = "none";
 
   const credentialState = readCredentialState();
   const oauthCandidates: CredentialCandidate<CodexAttemptCredential>[] = [];
@@ -157,6 +178,7 @@ async function fetchQuotaWithDependencies(
     credentialState.status === "available" ||
     credentialState.status === "expired"
   ) {
+    evidence = strongerEvidence(evidence, "tested");
     oauthCandidates.push({
       source: "oauth",
       localState: credentialState.status === "available" ? "valid" : "expired",
@@ -165,15 +187,32 @@ async function fetchQuotaWithDependencies(
   } else {
     attempts.push({
       source: "oauth",
-      status: "skipped",
+      status: credentialState.status === "unreadable" ? "failed" : "skipped",
       error: `credentials_${credentialState.status}`,
-      // A malformed store still holds a credential, so a sibling source that
-      // answers supersedes it rather than replacing it silently.
+      // A store that exists still stands between this run and a credential, so
+      // a sibling source that answers supersedes it rather than replacing it
+      // silently.
       ...(credentialState.status === "missing"
         ? {}
         : { credentialPresent: true }),
     });
-    finalError = "Codex sign-in required";
+    if (credentialState.status === "missing") {
+      // No store to read is not a sign-out. It stays `auth_required` because a
+      // credential is still what this read needs, but it must not claim the
+      // account is signed out on evidence the run never gathered.
+      finalError = "Codex credential required";
+    } else if (credentialState.status === "unreadable") {
+      // The file was never opened, so nothing is known about what it holds:
+      // not an auth verdict, and not a claim that it holds no login.
+      finalError = "Codex auth.json could not be read; check its permissions";
+    } else {
+      // The store was read and yielded nothing this adapter can send, so no
+      // endpoint examined a credential: that is a stored-credential problem,
+      // not a sign-out.
+      evidence = strongerEvidence(evidence, "unusable");
+      finalError =
+        "Codex credential required; local store holds no usable ChatGPT login";
+    }
     errorIsDefault = false;
   }
 
@@ -207,6 +246,7 @@ async function fetchQuotaWithDependencies(
   }
   const piCandidates: CredentialCandidate<CodexAttemptCredential>[] = [];
   if (piResolution.status === "available") {
+    evidence = strongerEvidence(evidence, "tested");
     piCandidates.push({
       source: PI_CODEX_CREDENTIAL_SOURCE,
       localState: "valid",
@@ -219,6 +259,7 @@ async function fetchQuotaWithDependencies(
     piResolution.status === "expired" &&
     piResolution.credentials !== undefined
   ) {
+    evidence = strongerEvidence(evidence, "tested");
     piCandidates.push({
       source: PI_CODEX_CREDENTIAL_SOURCE,
       localState: "expired",
@@ -229,7 +270,10 @@ async function fetchQuotaWithDependencies(
       },
     });
   } else {
-    attempts.push(piSourceAttempt(piResolution));
+    const piAttempt = piSourceAttempt(piResolution);
+    if (piAttempt.credentialPresent)
+      evidence = strongerEvidence(evidence, "unusable");
+    attempts.push(piAttempt);
     if (
       piResolution.status === "error" &&
       (errorIsDefault || statusFromError(finalError) === "auth_required")
@@ -302,7 +346,13 @@ async function fetchQuotaWithDependencies(
     }
   }
 
-  return codexFailureReport(finalError, undefined, attempts);
+  return codexFailureReport(
+    finalError,
+    undefined,
+    attempts,
+    undefined,
+    evidence,
+  );
 }
 
 /**
@@ -380,23 +430,32 @@ function codexSuccessReport(
   });
 }
 
+/**
+ * `evidence` defaults to `tested` so a caller that does not track it can never
+ * publish a reach claim by omission: `no_local_credential` and
+ * `local_credential_unusable` are only reported where the run actually
+ * established that no store held a credential, or that none held a usable one.
+ */
 function codexFailureReport(
   error: string,
   retryAfter: string | undefined,
   attempts: SourceAttempt[],
   source?: ProviderQuota["source"],
+  evidence: LocalCredentialEvidence = "tested",
 ): ProviderQuota {
   const cached = readCachedProvider("codex");
   if (cached) {
     return staleFromCache(cached, error, sourceNames(attempts), attempts);
   }
+  const status = retryAfter ? "rate_limited" : statusFromError(error);
   return failedProvider({
     provider: "codex",
     label: "Codex",
     ...(source ? { source } : {}),
-    status: retryAfter ? "rate_limited" : statusFromError(error),
+    status,
     error,
     retryAfter,
+    reason: localCredentialReason(status, evidence),
     sourcesTried: sourceNames(attempts),
     attempts,
   });
@@ -765,15 +824,25 @@ function extractCredentialState(
       source: { source: "auth-json", path, status: "missing" },
     };
   if (raw.status === "invalid")
-    return {
-      status: "invalid",
-      source: {
-        source: "auth-json",
-        path,
-        status: "invalid",
-        error: raw.error,
-      },
-    };
+    return raw.error === "file_read_error"
+      ? {
+          status: "unreadable",
+          source: {
+            source: "auth-json",
+            path,
+            status: "error",
+            error: raw.error,
+          },
+        }
+      : {
+          status: "invalid",
+          source: {
+            source: "auth-json",
+            path,
+            status: "invalid",
+            error: raw.error,
+          },
+        };
   const data = objectValue(raw.value);
   if (!data)
     return {

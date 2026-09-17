@@ -47,9 +47,24 @@ export type ProviderStatus =
  */
 export type ProviderAuthStatus = "usable" | "expired_refreshable" | "unusable";
 
+/**
+ * `no_local_credential` means no store quota-axi reads held a credential to
+ * test - a fact about quota-axi's reach, not about the account.
+ * `local_credential_unusable` means a store was read and yielded nothing this
+ * adapter can send, so no endpoint ever examined a credential - it does not
+ * claim the store held one. Together they are
+ * the discriminators for `auth_required`, which otherwise cannot be told apart
+ * from a credential the vendor actually refused; that case alone carries no
+ * reason. quota-axi reads the stores listed in README Provider notes; a
+ * credential kept anywhere else (a proxy's own state directory, another
+ * machine, a store quota-axi does not read) reaches the first path while the
+ * provider is answering live quota to whoever holds it.
+ */
 export type ProviderStateReason =
   | "keychain_access_required"
-  | "credentials_expired";
+  | "credentials_expired"
+  | "no_local_credential"
+  | "local_credential_unusable";
 
 export type QuotaPaceStatus = "ahead" | "on_pace" | "behind" | "unknown";
 
