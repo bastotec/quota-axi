@@ -583,9 +583,11 @@ function isCodexAccountWindow(window: QuotaWindow): boolean {
  *
  * The key is the adapter's own scope identity, so the periods and repeats a
  * vendor spells into a window id never have to be recovered from that id here.
- * A model window carrying no scope structure - a snapshot cached before scopes
- * were carried - keys on its own id, which is what the scope identity spelled
- * for a single-period window anyway.
+ * No adapter emits a model window without a scope today, and no cached snapshot
+ * can reintroduce one. A window that still arrives without one keys on its own
+ * id: a defensive default for a future adapter, and deliberately not an
+ * attribution - `src/models.ts` names such a window in `unmatchedWindowIds`
+ * rather than reading its id as a scope.
  */
 function modelScopeGroups(
   windows: readonly QuotaWindow[],

@@ -163,7 +163,7 @@ describe("quota cache", () => {
         percentUsed: 30,
         modelScope: { id: "seven_day_opus", name: "Opus" },
       },
-      // A window from a snapshot written before scopes were carried.
+      // A model window whose adapter carried no scope structure.
       { id: "model:legacy", label: "Legacy", kind: "model", percentUsed: 10 },
     ];
     writeCachedProviders([claude]);
