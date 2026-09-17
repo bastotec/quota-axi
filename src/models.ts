@@ -1,7 +1,6 @@
 import {
   intelligenceForLiveModel,
-  liveModelMatchesWindowSlug,
-  modelWindowSlug,
+  liveModelMatchesScope,
 } from "./model-catalog.js";
 import { MODEL_CATALOG } from "./model-kb.js";
 import type {
@@ -16,6 +15,7 @@ import type {
   ModelReference,
   ModelSortKey,
   ModelsResponse,
+  ModelWindowScope,
   ProviderId,
   ProviderQuota,
   ProviderStateSummary,
@@ -62,9 +62,9 @@ validateModelCatalog(MODEL_CATALOG);
  *
  * Model identity is the vendor's: rows for a provider whose live catalog was
  * read name only models that provider listed on this run, and a model-scoped
- * window is attributed by matching the vendor's window slug against the
- * vendor's model identity. The built-in catalog contributes reviewed
- * intelligence buckets and nothing else.
+ * window is attributed by matching the model scope its adapter read from the
+ * vendor against the vendor's own model identity. The built-in catalog
+ * contributes reviewed intelligence buckets and nothing else.
  *
  * When a provider's live catalog cannot be read, its rows fall back to the
  * built-in lineup but are marked `unverified_builtin` and `catalogSources` says
@@ -106,6 +106,7 @@ export function createModelsResponse(
       reason: "no_live_catalog_source",
     };
     catalogSources.push(catalogSourceReport(live));
+    unmatchedWindowIds.push(...scopelessModelWindowIds(provider));
     const providerEntries = catalog.entries.filter(
       (entry) => entry.provider === provider.provider,
     );
@@ -237,8 +238,9 @@ function liveRows(
   entries: readonly ModelCatalogEntry[],
 ): ModelQuotaRecord[] {
   const state = stateSummary(provider);
+  const scopes = modelScopes(provider);
   return live.map((model) => {
-    const effective = liveAvailabilityFor(model, provider);
+    const effective = liveAvailabilityFor(model, provider, scopes);
     const intelligence = intelligenceForLiveModel(model, entries);
     return {
       provider: provider.provider as ModelCatalogEntry["provider"],
@@ -286,11 +288,10 @@ function builtinAttributions(
   provider: ProviderQuota,
   entries: readonly ModelCatalogEntry[],
 ): UnverifiedWindowAttribution[] {
-  const scopes = new Set(modelScopes(provider));
+  const scopeIds = new Set(modelScopes(provider).map((scope) => scope.id));
   return entries.flatMap((entry) =>
     (entry.windowIds ?? [])
-      .map(normalizedModelScope)
-      .filter((scope) => scopes.has(scope))
+      .filter((windowId) => scopeIds.has(windowId))
       .map((windowId) => ({
         provider: provider.provider,
         windowId,
@@ -299,18 +300,42 @@ function builtinAttributions(
   );
 }
 
+/**
+ * The scope entry whose vendor-declared model scope covers this model, or the
+ * provider account scope. The availability entry is joined to the window scope
+ * by the adapter's own scope identity, never by taking a scope name apart.
+ *
+ * A vendor can meter one model under more than one scope - a family bound and a
+ * model-specific bound both cover it - and the order it happens to list them in
+ * says nothing about which one governs. The most binding matching scope is the
+ * one reported, so the row never publishes headroom a tighter bound denies. A
+ * scope whose availability is unknown asserts no number, so it answers only
+ * when no matching scope reports one.
+ */
 function liveAvailabilityFor(
   model: LiveModelRecord,
   provider: ProviderQuota,
+  scopes: readonly ModelWindowScope[],
 ): EffectiveAvailability | undefined {
   const availability = provider.quotaSemantics?.effectiveAvailability ?? [];
-  const scoped = availability.find((candidate) =>
-    liveModelMatchesWindowSlug(
-      model,
-      modelWindowSlug(normalizedModelScope(candidate.scope)),
+  const matching = availability.filter((candidate) =>
+    scopes.some(
+      (scope) =>
+        scope.id === candidate.scope && liveModelMatchesScope(model, scope),
     ),
   );
+  const scoped = matching.reduce<EffectiveAvailability | undefined>(
+    (binding, candidate) =>
+      binding === undefined || bindingRank(candidate) < bindingRank(binding)
+        ? candidate
+        : binding,
+    undefined,
+  );
   return scoped ?? accountAvailability(availability);
+}
+
+function bindingRank(availability: EffectiveAvailability): number {
+  return availability.effectivePercentRemaining ?? Number.POSITIVE_INFINITY;
 }
 
 function builtinAvailabilityFor(
@@ -320,7 +345,7 @@ function builtinAvailabilityFor(
   const availability = provider.quotaSemantics?.effectiveAvailability ?? [];
   for (const windowId of entry.windowIds ?? []) {
     const found = availability.find(
-      (candidate) => candidate.scope === normalizedModelScope(windowId),
+      (candidate) => candidate.scope === windowId,
     );
     if (found) return found;
   }
@@ -343,43 +368,44 @@ function unmatchedAgainstLive(
 ): string[] {
   return modelScopes(provider)
     .filter(
-      (scope) =>
-        !live.some((model) =>
-          liveModelMatchesWindowSlug(model, modelWindowSlug(scope)),
-        ),
+      (scope) => !live.some((model) => liveModelMatchesScope(model, scope)),
     )
-    .map((scope) => `${provider.provider}/${scope}`);
+    .map((scope) => `${provider.provider}/${scope.id}`);
 }
 
 function unmatchedAgainstBuiltin(
   provider: ProviderQuota,
   entries: readonly ModelCatalogEntry[],
 ): string[] {
-  const knownScopes = new Set(
-    entries.flatMap((entry) => entry.windowIds ?? []).map(normalizedModelScope),
-  );
+  const claimed = new Set(entries.flatMap((entry) => entry.windowIds ?? []));
   return modelScopes(provider)
-    .filter((scope) => !knownScopes.has(scope))
-    .map((scope) => `${provider.provider}/${scope}`);
+    .filter((scope) => !claimed.has(scope.id))
+    .map((scope) => `${provider.provider}/${scope.id}`);
 }
 
-function modelScopes(provider: ProviderQuota): string[] {
-  const seen = new Set<string>();
+/**
+ * Each model scope this provider reported, once, in window order. A model
+ * window whose adapter read no scope structure contributes none: the join
+ * declines to guess one back out of the window id, and
+ * {@link scopelessModelWindowIds} names it so the loss is disclosed rather
+ * than silent.
+ */
+function scopelessModelWindowIds(provider: ProviderQuota): string[] {
   return provider.windows
-    .filter((window) => window.kind === "model")
-    .map((window) => normalizedModelScope(window.id))
-    .filter((scope) => {
-      if (seen.has(scope)) return false;
-      seen.add(scope);
-      return true;
-    });
+    .filter((window) => window.kind === "model" && !window.modelScope)
+    .map((window) => `${provider.provider}/${window.id}`);
 }
 
-function normalizedModelScope(windowId: string): string {
-  const deduped = windowId.startsWith("model:")
-    ? windowId
-    : windowId.replace(/_\d+$/, "");
-  return deduped.replace(/:(?:5h|7d|window:[^:]+?)(?:_\d+)?$/, "");
+function modelScopes(provider: ProviderQuota): ModelWindowScope[] {
+  const seen = new Set<string>();
+  const scopes: ModelWindowScope[] = [];
+  for (const window of provider.windows) {
+    const scope = window.modelScope;
+    if (window.kind !== "model" || !scope || seen.has(scope.id)) continue;
+    seen.add(scope.id);
+    scopes.push(scope);
+  }
+  return scopes;
 }
 
 function stateSummary(provider: ProviderQuota): ProviderStateSummary {

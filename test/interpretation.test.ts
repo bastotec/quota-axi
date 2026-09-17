@@ -38,6 +38,21 @@ function window(
   };
 }
 
+/**
+ * A Codex named-model window as the adapter builds it: the vendor's own scope
+ * identity carried beside the window rather than spelled only into its id.
+ */
+function codexModelWindow(
+  period: "5h" | "7d",
+  percentRemaining: number,
+  extra: Partial<QuotaWindow> = {},
+): QuotaWindow {
+  return window(`model:codex_bengalfox:${period}`, "model", percentRemaining, {
+    modelScope: { id: "model:codex_bengalfox", name: "codex_bengalfox" },
+    ...extra,
+  });
+}
+
 function weeklyResetsAt(elapsedFraction: number): string {
   const remainingSeconds = WEEK_SECONDS * (1 - elapsedFraction);
   return new Date(
@@ -282,11 +297,16 @@ describe("quota semantics", () => {
     const result = withQuotaSemantics(
       provider("alibaba", [
         window("weekly", "weekly", 80),
-        window("model:qwen3-max", "model", 80),
-        {
-          ...window("model:qwen3-max:2", "model", 20),
+        window("model:qwen3-max", "model", 80, {
+          modelScope: { id: "model:qwen3-max", name: "qwen3-max" },
+        }),
+        window("model:qwen3-max:2", "model", 20, {
           label: "model:qwen3-max",
-        },
+          modelScope: {
+            id: "model:qwen3-max",
+            name: "qwen3-max",
+          },
+        }),
       ]),
       GENERATED_AT,
     );
@@ -431,7 +451,7 @@ describe("quota semantics", () => {
         window("weekly", "weekly", 38),
         window("code_review_five_hour", "session", 80),
         window("code_review_weekly", "weekly", 70),
-        window("model:codex_bengalfox:7d", "model", 99),
+        codexModelWindow("7d", 99),
       ]),
       GENERATED_AT,
     );
@@ -467,11 +487,11 @@ describe("quota semantics", () => {
           startsAt: offsetFromGeneratedAt(-4 * 24 * 60 * 60),
           resetsAt: offsetFromGeneratedAt(3 * 24 * 60 * 60),
         }),
-        window("model:codex_bengalfox:5h", "model", 92, {
+        codexModelWindow("5h", 92, {
           startsAt: GENERATED_AT,
           resetsAt: offsetFromGeneratedAt(5 * 60 * 60),
         }),
-        window("model:codex_bengalfox:7d", "model", 96, {
+        codexModelWindow("7d", 96, {
           startsAt: GENERATED_AT,
           resetsAt: offsetFromGeneratedAt(7 * 24 * 60 * 60),
         }),
@@ -519,8 +539,8 @@ describe("quota semantics", () => {
     const result = withQuotaSemantics(
       provider("codex", [
         window("weekly", "weekly", 0),
-        window("model:codex_bengalfox:5h", "model", 92),
-        window("model:codex_bengalfox:7d", "model", 0),
+        codexModelWindow("5h", 92),
+        codexModelWindow("7d", 0),
       ]),
       GENERATED_AT,
     );

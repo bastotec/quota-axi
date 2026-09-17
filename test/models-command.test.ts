@@ -36,6 +36,7 @@ describe("models command", () => {
           kind: "model",
           percentUsed: 20,
           percentRemaining: 80,
+          modelScope: { id: "model:fable", name: "Fable" },
         },
       ],
       state: { status: "fresh", stale: false, sourcesTried: ["oauth"] },
@@ -151,9 +152,10 @@ describe("models command", () => {
 
   /**
    * Regression: Claude slugifies an id-less limit's display name, so
-   * "Claude Opus 4.5" becomes `model:claude_opus_4_5`. Scope normalization used
-   * to strip the trailing `_5`, which turned the window into `claude_opus_4`
-   * and published Opus 4.5's bound as Opus 4's.
+   * "Claude Opus 4.5" becomes `model:claude_opus_4_5`. A reader that took that
+   * id apart stripped the trailing `_5` as a duplicate counter, turning the
+   * window into `claude_opus_4` and publishing Opus 4.5's bound as Opus 4's.
+   * The vendor's own display name is carried instead, so nothing is stripped.
    */
   it("keeps a slugified versioned window off the vendor's earlier version", async () => {
     PROVIDERS.claude = liveCatalogAdapter(
@@ -168,6 +170,10 @@ describe("models command", () => {
             kind: "model",
             percentUsed: 20,
             percentRemaining: 80,
+            modelScope: {
+              id: "model:claude_opus_4_5",
+              name: "Claude Opus 4.5",
+            },
           },
         ],
         state: { status: "fresh", stale: false, sourcesTried: ["oauth"] },
@@ -320,11 +326,12 @@ describe("models command", () => {
 
   /**
    * Regression: Codex renames a repeated window to `<id>_<n>`, so a deduplicated
-   * model window arrives as `model:gpt-5.1-codex:5h_2`. Scope normalization has
-   * to see through that counter, or a window that is in fact attributed is
-   * published as unaccounted for.
+   * model window arrives as `model:gpt-5.1-codex:5h_2`. The repeat shares the
+   * scope it repeats, which the adapter states outright; a reader that had to
+   * recover the counter from the id published an attributed window as
+   * unaccounted for instead.
    */
-  it("normalizes a deduplicated Codex model window to its own scope", async () => {
+  it("keeps a deduplicated Codex model window on the scope it repeats", async () => {
     PROVIDERS.codex = adapter({
       provider: "codex",
       label: "Codex",
@@ -336,6 +343,10 @@ describe("models command", () => {
           kind: "model",
           percentUsed: 10,
           percentRemaining: 90,
+          modelScope: {
+            id: "model:gpt-5.1-codex",
+            name: "gpt-5.1-codex",
+          },
         },
         {
           id: "model:gpt-5.1-codex:5h_2",
@@ -343,6 +354,10 @@ describe("models command", () => {
           kind: "model",
           percentUsed: 20,
           percentRemaining: 80,
+          modelScope: {
+            id: "model:gpt-5.1-codex",
+            name: "gpt-5.1-codex",
+          },
         },
       ],
       state: { status: "fresh", stale: false, sourcesTried: ["oauth"] },
@@ -373,6 +388,10 @@ describe("models command", () => {
           kind: "model",
           percentUsed: 20,
           percentRemaining: 80,
+          modelScope: {
+            id: "model:codex_bengalfox",
+            name: "codex_bengalfox",
+          },
         },
       ],
       state: { status: "fresh", stale: false, sourcesTried: ["oauth"] },
@@ -394,6 +413,96 @@ describe("models command", () => {
     const toon = await capture(["models", "--provider", "codex"]);
     expect(toon).toContain("unverifiedAttributions[");
     expect(toon).toContain("model:codex_bengalfox");
+  });
+
+  /**
+   * Regression: Anthropic's Opus week arrives as `seven_day_opus`, a window id
+   * with no `model:` prefix, so a reader that recovered scope from the id could
+   * not reach it at all. Every Opus row then reported the account-wide
+   * remaining and overstated the headroom the Opus bound actually leaves.
+   */
+  it("binds Opus rows to Anthropic's Opus week, not the account remaining", async () => {
+    PROVIDERS.claude = liveCatalogAdapter(opusWeekQuota(), [
+      { id: "claude-opus-4-5-20251101", label: "Claude Opus 4.5" },
+      { id: "claude-sonnet-4-5-20250929", label: "Claude Sonnet 4.5" },
+    ]);
+
+    const json = JSON.parse(
+      await capture(["models", "--provider", "claude", "--json"]),
+    );
+    const byId = new Map(
+      json.models.map((model: { id: string }) => [model.id, model]),
+    );
+
+    expect(byId.get("claude-opus-4-5-20251101")).toMatchObject({
+      quotaScopes: ["seven_day_opus"],
+      effective: { scope: "seven_day_opus", effectivePercentRemaining: 0 },
+    });
+    // A model the Opus window does not name keeps the account evidence.
+    expect(byId.get("claude-sonnet-4-5-20250929")).toMatchObject({
+      quotaScopes: ["all_models"],
+      effective: { scope: "all_models", effectivePercentRemaining: 80 },
+    });
+    expect(json.unmatchedWindowIds ?? []).not.toContain(
+      "claude/seven_day_opus",
+    );
+  });
+
+  /**
+   * Regression: the first matching scope in the vendor's own array order won,
+   * so a family bound listed ahead of the model-specific bound that governs the
+   * same model published the family's remaining and overstated the headroom.
+   */
+  it("binds a model to its most binding scope, not the vendor's first", async () => {
+    PROVIDERS.claude = liveCatalogAdapter(opusFamilyAndModelQuota(), [
+      { id: "claude-opus-4-5-20251101", label: "Claude Opus 4.5" },
+    ]);
+
+    const json = JSON.parse(
+      await capture(["models", "--provider", "claude", "--json"]),
+    );
+    const row = json.models.find(
+      (model: { id: string }) => model.id === "claude-opus-4-5-20251101",
+    );
+
+    expect(row).toMatchObject({
+      quotaScopes: ["model:claude-opus-4-5"],
+      effective: {
+        scope: "model:claude-opus-4-5",
+        effectivePercentRemaining: 0,
+      },
+    });
+  });
+
+  /**
+   * Belt and braces for a model window that reaches the join with no scope at
+   * all: it is named rather than silently dropped out of every disclosure.
+   */
+  it("names a model window carrying no vendor scope as unmatched", async () => {
+    PROVIDERS.claude = liveCatalogAdapter(
+      {
+        provider: "claude",
+        label: "Claude",
+        source: "oauth",
+        windows: [
+          {
+            id: "model:scopeless",
+            label: "Scopeless week",
+            kind: "model",
+            percentUsed: 20,
+            percentRemaining: 80,
+          },
+        ],
+        state: { status: "fresh", stale: false, sourcesTried: ["oauth"] },
+      },
+      [{ id: "claude-opus-4-5-20251101", label: "Claude Opus 4.5" }],
+    );
+
+    const json = JSON.parse(
+      await capture(["models", "--provider", "claude", "--json"]),
+    );
+
+    expect(json.unmatchedWindowIds).toContain("claude/model:scopeless");
   });
 
   it("keeps a live provider's rows out of another provider's buckets", async () => {
@@ -438,6 +547,7 @@ describe("models command", () => {
           id: "model:unmapped",
           label: "Unmapped",
           kind: "model",
+          modelScope: { id: "model:unmapped", name: "unmapped" },
         },
       ],
       state: { status: "fresh", stale: false, sourcesTried: ["oauth"] },
@@ -536,6 +646,43 @@ function liveCatalogAdapter(
   };
 }
 
+/**
+ * A Claude reading from the fixed top-level fields, where the Opus week is
+ * spent while the account windows still report allowance.
+ */
+function opusWeekQuota(): ProviderQuota {
+  return {
+    provider: "claude",
+    label: "Claude",
+    source: "oauth",
+    windows: [
+      {
+        id: "five_hour",
+        label: "session",
+        kind: "session",
+        percentUsed: 10,
+        percentRemaining: 90,
+      },
+      {
+        id: "seven_day",
+        label: "week",
+        kind: "weekly",
+        percentUsed: 20,
+        percentRemaining: 80,
+      },
+      {
+        id: "seven_day_opus",
+        label: "opus week",
+        kind: "model",
+        percentUsed: 100,
+        percentRemaining: 0,
+        modelScope: { id: "seven_day_opus", name: "Opus" },
+      },
+    ],
+    state: { status: "fresh", stale: false, sourcesTried: ["oauth"] },
+  };
+}
+
 /** A Claude reading whose only model-scoped window is the Fable weekly one. */
 function fableQuota(): ProviderQuota {
   return {
@@ -549,6 +696,42 @@ function fableQuota(): ProviderQuota {
         kind: "model",
         percentUsed: 20,
         percentRemaining: 80,
+        modelScope: { id: "model:fable", name: "Fable" },
+      },
+    ],
+    state: { status: "fresh", stale: false, sourcesTried: ["oauth"] },
+  };
+}
+
+/**
+ * A Claude reading where Anthropic meters the same model twice: an id-less
+ * family limit it lists first, and the model-specific limit that governs it.
+ */
+function opusFamilyAndModelQuota(): ProviderQuota {
+  return {
+    provider: "claude",
+    label: "Claude",
+    source: "oauth",
+    windows: [
+      {
+        id: "model:opus",
+        label: "Opus week",
+        kind: "model",
+        percentUsed: 10,
+        percentRemaining: 90,
+        modelScope: { id: "model:opus", name: "Opus" },
+      },
+      {
+        id: "model:claude-opus-4-5",
+        label: "Claude Opus 4.5 week",
+        kind: "model",
+        percentUsed: 100,
+        percentRemaining: 0,
+        modelScope: {
+          id: "model:claude-opus-4-5",
+          modelId: "claude-opus-4-5",
+          name: "Claude Opus 4.5",
+        },
       },
     ],
     state: { status: "fresh", stale: false, sourcesTried: ["oauth"] },

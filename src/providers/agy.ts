@@ -575,13 +575,20 @@ function normalizeModelConfigWindow(raw: unknown): QuotaWindow | undefined {
     (label ? slugify(label) : undefined);
   if (!label || !modelId || !quotaInfo) return undefined;
   const remaining = remainingFraction(quotaInfo);
+  const vendorModelId = stringValue(modelOrAlias?.model);
+  const id = `model:${slugify(modelId)}`;
   const result: QuotaWindow = {
-    id: `model:${slugify(modelId)}`,
+    id,
     label,
     kind: "model",
     resetsAt:
       parseEpochOrIso(quotaInfo.resetTime) ??
       parseEpochOrIso(quotaInfo.reset_time),
+    modelScope: {
+      id,
+      ...(vendorModelId ? { modelId: vendorModelId } : {}),
+      name: label,
+    },
   };
   if (remaining !== undefined) {
     const percentUsed = clampPercent((1 - clampFraction(remaining)) * 100);

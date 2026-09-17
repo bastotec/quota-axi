@@ -19,6 +19,7 @@ import type {
   AuthSourceReport,
   LiveModelCatalog,
   LiveModelRecord,
+  ModelWindowScope,
   ProviderAdapter,
   ProviderOptions,
   ProviderQuota,
@@ -67,6 +68,26 @@ const FIVE_HOURS_MS = 5 * 60 * 60 * 1_000;
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1_000;
 const FIVE_HOURS_SECONDS = 18_000;
 const SEVEN_DAYS_SECONDS = 604_800;
+
+/**
+ * The scope of Anthropic's fixed `seven_day_opus` field.
+ *
+ * Anthropic names the field after the model family it meters, and `Opus` is
+ * Anthropic's word for that family on both sides of the join: this scope
+ * reaches a live model only when Anthropic's own lineup spells `opus` in that
+ * model's identity. It is not a claim that the window id means any particular
+ * model id - the vendor's lineup decides which models the family contains, and
+ * when no live lineup is available nothing is attributed at all.
+ *
+ * This is why the field exists: the window id is `seven_day_opus`, so a reader
+ * that recovered scope from the id could not reach this window at all, and the
+ * Opus rows silently inherited the account-wide remaining instead of the Opus
+ * bound that actually governs them.
+ */
+const OPUS_WEEK_SCOPE: ModelWindowScope = {
+  id: "seven_day_opus",
+  name: "Opus",
+};
 
 type ClaudeCredentials = {
   source: "oauth-file" | "keychain";
@@ -627,6 +648,7 @@ export function normalizeClaudeApiUsage(
             "seven_day_opus",
             "opus week",
             "model",
+            OPUS_WEEK_SCOPE,
           ),
         ].filter((window): window is QuotaWindow => Boolean(window));
 
@@ -685,14 +707,24 @@ function normalizeScopedLimitEntry(raw: unknown): QuotaWindow | undefined {
   const model = scope ? objectValue(scope.model) : undefined;
   const modelName = model ? stringValue(model.display_name) : undefined;
   if (modelName) {
-    const modelKey = stringValue(model?.id) ?? slugify(modelName);
+    // Anthropic sends the scope already structured, so it is carried through
+    // rather than flattened into the id for a later reader to take apart. The
+    // id keeps its established spelling because it is this provider's window
+    // identifier, not the thing attribution reads.
+    const modelId = stringValue(model?.id);
+    const id = `model:${modelId ?? slugify(modelName)}`;
     return withRemaining({
-      id: `model:${modelKey}`,
+      id,
       label: `${modelName} week`,
       kind: "model",
       percentUsed: clampPercent(percent),
       resetsAt,
       windowSeconds: SEVEN_DAYS_SECONDS,
+      modelScope: {
+        id,
+        ...(modelId ? { modelId } : {}),
+        name: modelName,
+      },
     });
   }
 
@@ -1128,6 +1160,7 @@ function normalizeWindow(
   id: string,
   label: string,
   kind: QuotaWindow["kind"],
+  modelScope?: ModelWindowScope,
 ): QuotaWindow | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const data = raw as RawUsageWindow;
@@ -1142,6 +1175,7 @@ function normalizeWindow(
     percentUsed: clampPercent(used),
     resetsAt: stringValue(data.resets_at) ?? stringValue(data.reset_at),
     ...(windowSeconds !== undefined ? { windowSeconds } : {}),
+    ...(modelScope ? { modelScope } : {}),
   });
 }
 

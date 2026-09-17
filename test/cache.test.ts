@@ -46,7 +46,7 @@ describe("quota cache", () => {
       file,
       JSON.stringify({
         generatedAt: "x",
-        schemaVersion: 1,
+        schemaVersion: 3,
         providers: [{ provider: "claude" }],
       }),
     );
@@ -90,7 +90,7 @@ describe("quota cache", () => {
       writeFileSync(
         file,
         JSON.stringify({
-          schemaVersion: 1,
+          schemaVersion: 3,
           providers: [{ ...quota("codex", 20), windows: [window] }],
         }),
       );
@@ -152,6 +152,119 @@ describe("quota cache", () => {
     ]);
   });
 
+  it("round-trips a model window's vendor scope and tolerates one without", () => {
+    useTempCache();
+    const claude = quota("claude", 30);
+    claude.windows = [
+      {
+        id: "seven_day_opus",
+        label: "opus week",
+        kind: "model",
+        percentUsed: 30,
+        modelScope: { id: "seven_day_opus", name: "Opus" },
+      },
+      // A model window whose adapter carried no scope structure.
+      { id: "model:legacy", label: "Legacy", kind: "model", percentUsed: 10 },
+    ];
+    writeCachedProviders([claude]);
+
+    expect(readCachedProvider("claude")?.windows).toMatchObject([
+      {
+        id: "seven_day_opus",
+        modelScope: { id: "seven_day_opus", name: "Opus" },
+      },
+      { id: "model:legacy" },
+    ]);
+    expect(
+      readCachedProvider("claude")?.windows[1]?.modelScope,
+    ).toBeUndefined();
+  });
+
+  it("drops a cached model scope that carries no identity", () => {
+    useTempCache();
+    const file = cacheFilePath();
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(
+      file,
+      JSON.stringify({
+        generatedAt: "2026-07-06T18:10:00Z",
+        schemaVersion: 3,
+        providers: [
+          {
+            provider: "codex",
+            label: "Codex",
+            source: "oauth",
+            windows: [
+              {
+                id: "five_hour",
+                label: "session",
+                kind: "session",
+                percentUsed: 10,
+                modelScope: { name: "Opus" },
+              },
+            ],
+            state: { status: "fresh", stale: false, sourcesTried: ["oauth"] },
+          },
+        ],
+      }),
+    );
+
+    expect(readCachedProvider("codex")?.windows[0]?.modelScope).toBeUndefined();
+  });
+
+  /**
+   * Regression for the upgrade path: snapshots written before model windows
+   * carried their vendor scope are not reused at all. Reusing one attributed
+   * its model windows to nothing, so the model rows silently inherited the
+   * account-wide remaining - a confident number the model's own bound denies.
+   */
+  it.each([1, 2])(
+    "refuses a pre-scope snapshot written under schema version %i",
+    (schemaVersion) => {
+      useTempCache();
+      const file = cacheFilePath();
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(
+        file,
+        JSON.stringify({
+          generatedAt: "2026-09-16T18:10:00Z",
+          schemaVersion,
+          providers: [
+            {
+              provider: "codex",
+              label: "Codex",
+              source: "oauth",
+              windows: [
+                {
+                  id: "weekly",
+                  label: "week",
+                  kind: "weekly",
+                  percentUsed: 20,
+                  percentRemaining: 80,
+                  windowSeconds: 604_800,
+                },
+                {
+                  id: "model:codex_bengalfox:7d",
+                  label: "codex_bengalfox week",
+                  kind: "model",
+                  percentUsed: 100,
+                  percentRemaining: 0,
+                },
+              ],
+              state: {
+                status: "fresh",
+                stale: false,
+                sourcesTried: ["oauth"],
+              },
+            },
+          ],
+        }),
+      );
+
+      expect(readCachedProvider("codex")).toBeUndefined();
+    },
+  );
+
   it("merges fresh provider snapshots into existing cache", () => {
     useTempCache();
     writeCachedProviders([quota("claude", 10), quota("codex", 20)]);
@@ -204,7 +317,7 @@ describe("quota cache", () => {
       providers: Array<{ credentialContext?: string }>;
     };
     const contextId = payload.providers[0]?.credentialContext;
-    expect(payload.schemaVersion).toBe(2);
+    expect(payload.schemaVersion).toBe(3);
     expect(contextId).toMatch(/^[a-f0-9]{64}$/);
     expect(JSON.stringify(payload)).not.toContain(contextDir);
     expect(readCachedClaudeProvider(claudeCredentialContextId())).toBeDefined();

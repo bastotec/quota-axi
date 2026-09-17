@@ -556,7 +556,7 @@ function resolveRateLimitContainer(
   );
 }
 
-type WindowIdentity = Pick<QuotaWindow, "id" | "label" | "kind">;
+type WindowIdentity = Pick<QuotaWindow, "id" | "label" | "kind" | "modelScope">;
 
 type WindowIdentitySet = {
   session: WindowIdentity;
@@ -608,6 +608,13 @@ function windowPairFromContainer(
 // `metered_feature`/`limit_name`; the app-server RPC exposes an equivalent
 // `rateLimitsByLimitId` map keyed by limit id, where only the named entries
 // are extras (the unnamed one duplicates the base limit already parsed above).
+//
+// Both shapes also carry the vendor's own model slug for the bucket - the HTTP
+// one as `normal_model_slug`, the RPC one as `normalModelSlug`, which the
+// vendor documents as "the normal model whose display name and reasoning
+// options describe this quota alias". It is read here so a named bucket's model
+// identity is the vendor's statement rather than a guess about what its opaque
+// limit id means.
 function collectNamedRateLimitWindows(
   data: Record<string, unknown>,
 ): QuotaWindow[] {
@@ -624,7 +631,9 @@ function collectNamedRateLimitWindows(
     const label = stringValue(item.limit_name) ?? id;
     const container = objectValue(item.rate_limit);
     if (!id || !label || !container) continue;
-    windows.push(...namedLimitWindows(id, label, container));
+    windows.push(
+      ...namedLimitWindows(id, label, container, normalModelSlug(item)),
+    );
   }
 
   const byLimitId = objectValue(data.rateLimitsByLimitId);
@@ -634,28 +643,50 @@ function collectNamedRateLimitWindows(
       if (!item) continue;
       const label = stringValue(item.limitName) ?? stringValue(item.limit_name);
       if (!label) continue;
-      windows.push(...namedLimitWindows(limitId, label, item));
+      windows.push(
+        ...namedLimitWindows(limitId, label, item, normalModelSlug(item)),
+      );
     }
   }
 
   return windows;
 }
 
+/** The vendor's own model slug for a metered bucket, in either field spelling. */
+function normalModelSlug(item: Record<string, unknown>): string | undefined {
+  return (
+    stringValue(item.normal_model_slug) ?? stringValue(item.normalModelSlug)
+  );
+}
+
 function namedLimitWindows(
   id: string,
   label: string,
   container: Record<string, unknown>,
+  modelSlug?: string,
 ): QuotaWindow[] {
+  // The vendor's own metered-feature or limit id is the scope's identity, which
+  // every period of that limit shares. A limit id such as `codex_bengalfox` is
+  // an opaque bucket name, not a model name, so a model id is asserted only
+  // when the vendor sent one; what is always carried is the vendor's own name
+  // for the limit.
+  const scope = {
+    id: `model:${id}`,
+    ...(modelSlug ? { modelId: modelSlug } : {}),
+    name: label,
+  } as const;
   const identities: WindowIdentitySet = {
     session: {
       id: `model:${id}:5h`,
       label: `${label} session`,
       kind: "model",
+      modelScope: scope,
     },
     weekly: {
       id: `model:${id}:7d`,
       label: `${label} week`,
       kind: "model",
+      modelScope: scope,
     },
     unfamiliar(windowSeconds) {
       const duration = readableWindowDuration(windowSeconds);
@@ -663,6 +694,7 @@ function namedLimitWindows(
         id: `model:${id}:window:${duration}`,
         label: `${label} ${duration} window`,
         kind: "model",
+        modelScope: scope,
       };
     },
   };
@@ -680,12 +712,17 @@ function namedLimitWindows(
   ].filter((window): window is QuotaWindow => Boolean(window));
 }
 
+/**
+ * Number repeats of an identical vendor window id. The scope identity itself is
+ * untouched: a repeat bounds the same scope as the window it repeats.
+ */
 function deduplicateWindowIds(windows: QuotaWindow[]): QuotaWindow[] {
   const counts = new Map<string, number>();
   return windows.map((window) => {
     const count = (counts.get(window.id) ?? 0) + 1;
     counts.set(window.id, count);
-    return count === 1 ? window : { ...window, id: `${window.id}_${count}` };
+    if (count === 1) return window;
+    return { ...window, id: `${window.id}_${count}` };
   });
 }
 

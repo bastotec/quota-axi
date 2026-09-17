@@ -175,6 +175,34 @@ export type BoundConflict = {
   liveWindowIds: string[];
 };
 
+/**
+ * The model scope of a `kind: "model"` window, in the vendor's own terms.
+ *
+ * The adapter that read the vendor's response attaches the structure the vendor
+ * gave it, so attribution downstream reads typed fields instead of decoding a
+ * flattened window id. Provider id grammars genuinely conflict - an underscore
+ * is part of a slugified Claude display name but a duplicate counter in a Codex
+ * id, and a trailing `:N` is a Codex period but an Alibaba repeat - so no
+ * shared reader can recover this structure from a string.
+ *
+ * `id` is the scope's identity across its periods and repeats, spelled the way
+ * this vendor spells it; it is what `effectiveAvailability[].scope` reports for
+ * a model scope. `modelId` and `name` are the vendor's own words about which
+ * model or family the scope covers, and are the only things a live vendor
+ * lineup is matched on.
+ */
+export type ModelWindowScope = {
+  /** Stable scope identity. Windows sharing it bound the same scope. */
+  id: string;
+  /** The vendor's own model identifier, when the vendor named one. */
+  modelId?: string;
+  /**
+   * The vendor's own name for the scope: a model name or a family name. Never
+   * a name quota-axi invented, and never an identifier it derived.
+   */
+  name?: string;
+};
+
 export type QuotaWindow = {
   id: string;
   label: string;
@@ -187,6 +215,12 @@ export type QuotaWindow = {
   windowSeconds?: number;
   spentUsd?: number;
   limitUsd?: number;
+  /**
+   * The vendor's own model scope, on `kind: "model"` windows whose adapter read
+   * one. Absent means no scope structure was available, never that the window
+   * is unscoped.
+   */
+  modelScope?: ModelWindowScope;
   /** Cycle-average pace relative to generatedAt. Not cached. */
   pace?: QuotaPace;
 };

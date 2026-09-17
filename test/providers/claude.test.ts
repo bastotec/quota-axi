@@ -39,6 +39,9 @@ describe("Claude quota parsing", () => {
         percentUsed: 7,
         percentRemaining: 93,
         windowSeconds: 604_800,
+        // Anthropic's own scope word, carried so attribution can reach a
+        // window whose id is not `model:`-prefixed at all.
+        modelScope: { id: "seven_day_opus", name: "Opus" },
       },
       {
         id: "extra_usage",
@@ -87,6 +90,9 @@ describe("Claude quota parsing", () => {
         percentRemaining: 37,
         resetsAt: "2026-07-11T09:30:00.318030+00:00",
         windowSeconds: 604_800,
+        // The vendor sent no `scope.model.id` for this limit, so the scope
+        // carries its display name and no model id is asserted.
+        modelScope: { id: "model:fable", name: "Fable" },
       },
       {
         id: "extra_usage",
@@ -95,6 +101,38 @@ describe("Claude quota parsing", () => {
         percentRemaining: 75,
         spentUsd: 5,
         limitUsd: 20,
+      },
+    ]);
+  });
+
+  it("carries a vendor model id through as the scope's identity", () => {
+    const result = normalizeClaudeApiUsage(
+      {
+        limits: [
+          {
+            percent: 12,
+            resets_at: "2026-07-11T09:30:00Z",
+            scope: {
+              model: {
+                id: "claude-opus-4-5",
+                display_name: "Claude Opus 4.5",
+              },
+            },
+          },
+        ],
+      },
+      "Max",
+    );
+
+    expect(result?.windows).toMatchObject([
+      {
+        id: "model:claude-opus-4-5",
+        kind: "model",
+        modelScope: {
+          id: "model:claude-opus-4-5",
+          modelId: "claude-opus-4-5",
+          name: "Claude Opus 4.5",
+        },
       },
     ]);
   });

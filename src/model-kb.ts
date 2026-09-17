@@ -41,6 +41,8 @@ export const MODEL_CATALOG: ModelCatalog = {
       intelligence: "high",
       windowIds: ["model:codex_bengalfox"],
       aliases: ["codex_bengalfox", "GPT-5.3-Codex-Spark"],
+      notes:
+        "Unverified. `codex_bengalfox` is an opaque metered limit id, not a model name: the vendor's own client treats `limit_id` and `limit_name` as separate server-provided fields, its test fixture pairs this id with `gpt-5.2-codex-sonic`, and a user capture pairs it with `GPT-5.3-Codex-Spark`, so the id is not a stable model identity and neither observed name is `gpt-5.3-codex`. openai/codex#36432 records that no supported model-to-bucket mapping is exposed and that clients should not infer model applicability from `limitName`. The vendor does publish a per-bucket `normal_model_slug`/`normalModelSlug`, which `src/providers/codex.ts` now reads into the window's model scope, so a reading that carries it needs no claim from here. This entry is kept, still unverified and still disclosed in `unverifiedAttributions`, because nothing disproves it either.",
     },
     {
       provider: "codex",

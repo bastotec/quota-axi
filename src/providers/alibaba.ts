@@ -307,6 +307,12 @@ function normalizeAlibabaModelLimits(value: unknown): QuotaWindow[] {
       percentUsed: clampPercentage(100 - percentRemaining),
       percentRemaining,
       ...(reset ? { resetsAt: reset } : {}),
+      // A repeat bounds the same scope as the window it repeats, so the scope
+      // identity stays the base id and the `:N` suffix belongs to the id alone.
+      modelScope: {
+        id: baseId,
+        name: model,
+      },
     });
   }
   return windows;
