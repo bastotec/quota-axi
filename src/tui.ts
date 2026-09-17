@@ -397,7 +397,7 @@ function buildFailedCard(provider: ProviderQuota): Card {
   const message = noCredential
     ? "no credential in the stores quota-axi reads"
     : unusableCredential
-      ? "stored credential is not usable; re-authenticate"
+      ? "stored credential unusable; fix the store"
       : humanize(provider.state.error ?? "") ||
         (status === "auth_required" ? "sign-in required" : humanize(status));
   const body: { text: string; style: StyleName }[] = [

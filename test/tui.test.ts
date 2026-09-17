@@ -118,9 +118,13 @@ describe("renderQuotaTui structure", () => {
     const title = findLine(lines, "○ cursor");
     expect(title).toContain("credential unusable");
     expect(title).not.toContain("signed out");
+    // The remedy is repairing the store, never a new sign-in: re-authenticating
+    // cannot fix a credential no endpoint has refused.
     expect(
-      findCardLine(lines, 1, "stored credential is not usable"),
+      findCardLine(lines, 1, "stored credential unusable; fix the store"),
     ).toBeDefined();
+    const card = findCardLine(lines, 1, "stored credential unusable")!;
+    expect(card).not.toMatch(/sign|auth/i);
   });
 
   it("zips live provider cards two-up with live providers first", () => {
