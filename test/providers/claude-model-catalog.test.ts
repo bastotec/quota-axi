@@ -251,17 +251,51 @@ describe("Claude live model catalog", () => {
     });
   });
 
-  it("falls through to a sibling credential source after a rejection", async () => {
+  /**
+   * Regression: the listing read has to select the same credential the quota
+   * read in the same run selects, or one account's model lineup gets joined to
+   * another account's windows. On macOS the Keychain owns the session, so it is
+   * read first even when the file token is still valid.
+   */
+  it("reads the credential the quota path owns before a valid sibling", async () => {
     usePlatform("darwin");
     useTempHome();
-    writeCredentials("rejected-token");
+    writeCredentials("file-token", "2035-01-01T00:00:00.000Z");
     const execFileText = vi.fn(async () =>
       JSON.stringify({ claudeAiOauth: { accessToken: "keychain-token" } }),
     );
     vi.doMock("../../src/lib/process.js", () => ({ execFileText }));
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({
+        data: [{ id: "claude-opus-5", display_name: "Claude Opus 5" }],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { fetchModelCatalog } = await import("../../src/providers/claude.js");
+    await fetchModelCatalog({
+      allowKeychainPrompt: true,
+      refreshCredentials: false,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect((init.headers as Record<string, string>).authorization).toBe(
+      "Bearer keychain-token",
+    );
+  });
+
+  it("falls through to a sibling credential source after a rejection", async () => {
+    usePlatform("darwin");
+    useTempHome();
+    writeCredentials("file-token");
+    const execFileText = vi.fn(async () =>
+      JSON.stringify({ claudeAiOauth: { accessToken: "rejected-token" } }),
+    );
+    vi.doMock("../../src/lib/process.js", () => ({ execFileText }));
     const fetchMock = vi.fn(async (_url: unknown, init: RequestInit) =>
       (init.headers as Record<string, string>).authorization ===
-      "Bearer keychain-token"
+      "Bearer file-token"
         ? jsonResponse({
             data: [{ id: "claude-opus-5", display_name: "Claude Opus 5" }],
           })

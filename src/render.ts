@@ -529,7 +529,7 @@ export function renderModelsToon(
     renderHelp([
       "Default model order is deterministic and non-preferential (provider, then id)",
       "identity=live means the provider named this model itself on this run",
-      "identity=unverified means its live catalog was unreadable; see catalogSources.reason",
+      "identity=unverified means the provider's live lineup was not read on this run; see catalogSources.reason for why",
       "unverifiedAttributions[] names a window quota-axi mapped to a model on its own, unconfirmed by the vendor",
       "Run `quota-axi models --sort runway` for the documented opt-in runway comparator",
       "Run `quota-axi models --json` for catalog provenance and full quota evidence",

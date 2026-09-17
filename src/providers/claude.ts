@@ -310,12 +310,16 @@ function unconfirmedRefreshFailure(): ClaudeFailure {
   });
 }
 
-async function attemptClaudeQuota(
-  options: ProviderOptions,
-  attempts: SourceAttempt[],
-): Promise<ClaudeQuotaPass> {
-  const credentialStates = await readCredentialStates(options);
-  const credentialCandidates = credentialStates
+/**
+ * Every testable credential in the order Claude Code itself keeps them: the
+ * Keychain owns the session on macOS, then the longest-lived stored token.
+ * Both the quota read and the model-listing read select through this, so one
+ * run can never join one account's windows to another account's lineup.
+ */
+function orderedCredentialCandidates(
+  states: readonly CredentialState[],
+): (AvailableCredentialState | AdvisoryExpiredCredentialState)[] {
+  return states
     .filter(
       (
         state,
@@ -337,6 +341,14 @@ async function attemptClaudeQuota(
       }
       return (b.credentials.expiresAt ?? 0) - (a.credentials.expiresAt ?? 0);
     });
+}
+
+async function attemptClaudeQuota(
+  options: ProviderOptions,
+  attempts: SourceAttempt[],
+): Promise<ClaudeQuotaPass> {
+  const credentialStates = await readCredentialStates(options);
+  const credentialCandidates = orderedCredentialCandidates(credentialStates);
 
   for (const state of credentialStates) {
     if (state.status === "available" || state.status === "expired") continue;
@@ -1248,9 +1260,8 @@ class ClaudeFailure extends Error {
 export async function fetchModelCatalog(
   options: ProviderOptions,
 ): Promise<LiveModelCatalog> {
-  const states = await readCredentialStates(options);
-  const candidates = states.filter(
-    (state) => state.status === "available" || state.status === "expired",
+  const candidates = orderedCredentialCandidates(
+    await readCredentialStates(options),
   );
   if (candidates.length === 0) {
     return {
