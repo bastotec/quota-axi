@@ -48,11 +48,7 @@ function codexModelWindow(
   extra: Partial<QuotaWindow> = {},
 ): QuotaWindow {
   return window(`model:codex_bengalfox:${period}`, "model", percentRemaining, {
-    modelScope: {
-      id: "model:codex_bengalfox",
-      name: "codex_bengalfox",
-      period: period === "5h" ? "session" : "weekly",
-    },
+    modelScope: { id: "model:codex_bengalfox", name: "codex_bengalfox" },
     ...extra,
   });
 }
