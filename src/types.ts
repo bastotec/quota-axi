@@ -335,6 +335,32 @@ export type QuotaAxiResponse = {
   help?: string[];
 };
 
+/**
+ * Per-invocation credential state shared by the several reads of one command,
+ * created by `createProviderCredentialCache` in
+ * `src/providers/credential-cache.ts`, which documents why it exists and what
+ * it may hold. The store half and the credential half answer different
+ * questions and are deliberately not the same operation.
+ */
+export type ProviderCredentialCache = {
+  /** The cached resolution for `key`, resolving the store once on first use. */
+  read<T>(key: string, resolve: () => Promise<T>): Promise<T>;
+  /**
+   * Drop `key`, so the next read resolves the store again. This says only that
+   * the store may have been rewritten; it is not a verdict on any credential
+   * that resolution produced, and an unchanged store yields the same one.
+   */
+  invalidate(key: string): void;
+  /**
+   * Latch a credential the provider definitively rejected, so no later read in
+   * this run presents it again. Only a provider's own definitive rejection may
+   * latch; a transient failure never may.
+   */
+  rejectCredential(credentialId: string): void;
+  /** Whether this run already watched this credential be rejected. */
+  isCredentialRejected(credentialId: string): boolean;
+};
+
 export type ProviderOptions = {
   allowKeychainPrompt: boolean;
   /**
@@ -346,6 +372,13 @@ export type ProviderOptions = {
    * disk.
    */
   refreshCredentials: boolean;
+  /**
+   * Shares one resolved credential across the several reads of a single
+   * command, and withholds a credential this run already watched a provider
+   * definitively reject. Absent means neither. See
+   * `src/providers/credential-cache.ts`.
+   */
+  credentialCache?: ProviderCredentialCache;
 };
 
 export type ProviderAdapter = {

@@ -5,6 +5,7 @@ import { writeCachedProviders } from "./cache.js";
 import { withQuotaSemantics } from "./interpretation.js";
 import { createModelsResponse, MODEL_CATALOG_PROVIDER_IDS } from "./models.js";
 import { nowIso } from "./lib/time.js";
+import { createProviderCredentialCache } from "./providers/credential-cache.js";
 import { PROVIDERS } from "./providers/index.js";
 import {
   quotaJsonReport,
@@ -152,6 +153,11 @@ export async function modelsCommand(
   const options: ProviderOptions = {
     allowKeychainPrompt: flags.allowKeychainPrompt,
     refreshCredentials: !flags.noCredentialRefresh,
+    // `models` is the one command that reads a provider's store twice, so the
+    // two reads share one resolution - one macOS Keychain value read, and one
+    // account answering both halves - and the lineup read never re-presents a
+    // credential the quota read watched the vendor definitively reject.
+    credentialCache: createProviderCredentialCache(),
   };
   // Sequenced, not parallel: the quota read owns credential refresh and the
   // one-time Keychain grant, so the catalog read must observe the store it
