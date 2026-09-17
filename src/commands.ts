@@ -153,10 +153,11 @@ export async function modelsCommand(
     allowKeychainPrompt: flags.allowKeychainPrompt,
     refreshCredentials: !flags.noCredentialRefresh,
   };
-  const [quota, liveCatalogs] = await Promise.all([
-    fetchQuota(flags.providers, options),
-    fetchLiveModelCatalogs(flags.providers, options),
-  ]);
+  // Sequenced, not parallel: the quota read owns credential refresh and the
+  // one-time Keychain grant, so the catalog read must observe the store it
+  // leaves behind instead of racing it with a pre-refresh token.
+  const quota = await fetchQuota(flags.providers, options);
+  const liveCatalogs = await fetchLiveModelCatalogs(flags.providers, options);
   writeCachedProvidersBestEffort(quota.providers);
   const response = createModelsResponse(quota, {
     liveCatalogs,

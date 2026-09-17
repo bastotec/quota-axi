@@ -219,6 +219,7 @@ function catalogSourceReport(live: LiveModelCatalog): ModelCatalogSourceReport {
         status: "live",
         fetchedAt: live.fetchedAt,
         modelCount: live.models.length,
+        ...(live.truncated ? { reason: "partial_lineup" } : {}),
       }
     : { provider: live.provider, status: "unavailable", reason: live.reason };
 }

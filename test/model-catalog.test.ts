@@ -30,6 +30,20 @@ describe("liveModelMatchesWindowSlug", () => {
     expect(liveModelMatchesWindowSlug(codex, "gpt-5-codex-mini")).toBe(false);
   });
 
+  it("keeps a versioned scope off a different version of the same family", () => {
+    const opus45 = { id: "claude-opus-4-5-20251101", label: "Claude Opus 4.5" };
+
+    expect(liveModelMatchesWindowSlug(opus45, "claude_opus_4")).toBe(false);
+    expect(liveModelMatchesWindowSlug(opus45, "claude-opus-4")).toBe(false);
+    expect(liveModelMatchesWindowSlug(opus45, "claude_opus_4_5")).toBe(true);
+  });
+
+  it("matches a versioned scope on the vendor's dated snapshot of that model", () => {
+    const opus4 = { id: "claude-opus-4-20250514", label: "Claude Opus 4" };
+
+    expect(liveModelMatchesWindowSlug(opus4, "claude-opus-4")).toBe(true);
+  });
+
   it("matches whole tokens, never a substring of a longer word", () => {
     const sonnet = { id: "claude-sonnet-5", label: "Claude Sonnet 5" };
     // "son" is inside "sonnet" but is not a token of it.

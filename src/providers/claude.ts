@@ -1279,7 +1279,8 @@ export async function fetchModelCatalog(
         reason = `catalog_http_${response.status}`;
         continue;
       }
-      const models = normalizeClaudeModelCatalog(await response.json());
+      const payload: unknown = await response.json();
+      const models = normalizeClaudeModelCatalog(payload);
       if (models.length === 0) {
         reason = "catalog_unrecognized";
         continue;
@@ -1289,6 +1290,7 @@ export async function fetchModelCatalog(
         status: "live",
         fetchedAt: nowIso(),
         models,
+        ...(claudeModelCatalogIsTruncated(payload) ? { truncated: true } : {}),
       };
     } catch (error) {
       reason =
@@ -1300,6 +1302,16 @@ export async function fetchModelCatalog(
     }
   }
   return { provider: "claude", status: "unavailable", reason };
+}
+
+/**
+ * Whether the vendor said this page is not the whole lineup. quota-axi does not
+ * follow the vendor's pages here; it discloses that what it read is partial so
+ * an incomplete lineup is never published as the vendor's complete answer.
+ */
+export function claudeModelCatalogIsTruncated(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object") return false;
+  return (payload as { has_more?: unknown }).has_more === true;
 }
 
 /** Accept only records that carry the vendor's own id; never invent a label. */

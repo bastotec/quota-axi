@@ -29,10 +29,18 @@ function tokens(value: string): string[] {
 /**
  * Whether the vendor's live model record is in the scope its window slug names.
  *
- * The slug is a vendor scope name (`fable`, `gpt-5.1-codex`), which can cover a
- * family rather than one id, so every slug token must appear as a whole token
- * of the model's own id or display name. That keeps `fable` on the Fable models
- * and off every model whose name simply contains those letters.
+ * The slug is a vendor scope name. When it carries a version token
+ * (`gpt-5.1-codex`, `claude-opus-4`) it names one model version, so it is
+ * attributed only on exact vendor identity - the model's own id or display
+ * name, or that identity plus a dated vendor snapshot suffix. A version is
+ * never allowed to reach a different version: `claude-opus-4` stays off
+ * `claude-opus-4-5-20251101`.
+ *
+ * When the slug carries no version at all the vendor named a family rather than
+ * a model (Anthropic sends `scope.model.id: null` with `display_name: "Fable"`),
+ * so it is attributed to every live model of that family - the honest
+ * one-to-many mapping, matched on whole tokens so `fable` stays off every model
+ * that merely contains those letters.
  */
 export function liveModelMatchesWindowSlug(
   model: LiveModelRecord,
@@ -40,8 +48,32 @@ export function liveModelMatchesWindowSlug(
 ): boolean {
   const wanted = tokens(slug);
   if (wanted.length === 0) return false;
-  const identity = new Set([...tokens(model.id), ...tokens(model.label)]);
+  const id = tokens(model.id);
+  const label = tokens(model.label);
+
+  if (sameTokens(wanted, id) || sameTokens(wanted, label)) return true;
+  // A dated vendor snapshot of exactly the named model, never a sibling.
+  if (
+    id.length === wanted.length + 1 &&
+    /^\d{8}$/.test(id[id.length - 1]!) &&
+    sameTokens(wanted, id.slice(0, -1))
+  ) {
+    return true;
+  }
+
+  if (wanted.some((token) => /\d/.test(token))) return false;
+  const identity = new Set([...id, ...label]);
   return wanted.every((token) => identity.has(token));
+}
+
+function sameTokens(
+  left: readonly string[],
+  right: readonly string[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((token, index) => token === right[index])
+  );
 }
 
 /**

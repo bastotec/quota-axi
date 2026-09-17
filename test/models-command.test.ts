@@ -218,6 +218,67 @@ describe("models command", () => {
     expect(json.unverifiedIdentityProviders).toEqual(["claude"]);
   });
 
+  it("discloses a live lineup the vendor said was not complete", async () => {
+    PROVIDERS.claude = {
+      ...adapter(fableQuota()),
+      async fetchModelCatalog() {
+        return {
+          provider: "claude" as const,
+          status: "live" as const,
+          fetchedAt: "2026-09-17T12:00:00.000Z",
+          models: [{ id: "claude-fable-5-1", label: "Claude Fable 5.1" }],
+          truncated: true,
+        };
+      },
+    };
+
+    const json = JSON.parse(
+      await capture(["models", "--provider", "claude", "--json"]),
+    );
+    expect(json.catalogSources).toEqual([
+      {
+        provider: "claude",
+        status: "live",
+        fetchedAt: "2026-09-17T12:00:00.000Z",
+        modelCount: 1,
+        reason: "partial_lineup",
+      },
+    ]);
+
+    const toon = await capture(["models", "--provider", "claude"]);
+    expect(toon).toContain("partial_lineup");
+  });
+
+  /**
+   * Regression: reading the lineup concurrently with quota used the credential
+   * store as it was before the quota path refreshed it, so a refreshable
+   * account reported an unreadable catalog and fell back to built-in rows.
+   */
+  it("reads the live lineup only after the quota read has settled", async () => {
+    const order: string[] = [];
+    PROVIDERS.claude = {
+      ...adapter(fableQuota()),
+      async fetchQuota() {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        order.push("quota");
+        return fableQuota();
+      },
+      async fetchModelCatalog() {
+        order.push("catalog");
+        return {
+          provider: "claude" as const,
+          status: "live" as const,
+          fetchedAt: "2026-09-17T12:00:00.000Z",
+          models: [{ id: "claude-fable-5-1", label: "Claude Fable 5.1" }],
+        };
+      },
+    };
+
+    await capture(["models", "--provider", "claude", "--json"]);
+
+    expect(order).toEqual(["quota", "catalog"]);
+  });
+
   it("rejects unsupported model filters and comparators as usage errors", async () => {
     const intelligence = await capture([
       "models",

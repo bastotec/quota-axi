@@ -347,6 +347,11 @@ export type LiveModelCatalog =
       status: "live";
       fetchedAt: string;
       models: LiveModelRecord[];
+      /**
+       * Set when the vendor said more models exist than were read, so the
+       * lineup is the vendor's words but not all of them.
+       */
+      truncated?: boolean;
     }
   | { provider: ProviderId; status: "unavailable"; reason: string };
 
@@ -421,7 +426,10 @@ export type ModelIdentitySource = "live_catalog" | "unverified_builtin";
 export type ModelCatalogSourceReport = {
   provider: ProviderId;
   status: LiveModelCatalog["status"];
-  /** Why the live lineup is missing. Present only when unavailable. */
+  /**
+   * Why the live lineup is missing, or why a live one is not the whole lineup
+   * (`partial_lineup`). Absent when the vendor's complete lineup was read.
+   */
   reason?: string;
   /** When the live lineup was read. Present only when live. */
   fetchedAt?: string;
